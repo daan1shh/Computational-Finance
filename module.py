@@ -720,3 +720,32 @@ def bollinger_signal(series, window=20, num_std=2):
     signals_df['middle_band']     = ma
     signals_df['position_change'] = pos_change
     return signals_df
+
+
+def zscore_signal(series, window=20, threshold=2.0):
+    # Buy when the rolling z-score drops below -threshold (price > threshold std devs below mean)
+    # Sell when z-score reverts back above 0 (price crosses back to rolling mean)
+    #
+    # On a single asset this is mathematically equivalent to bollinger_signal with the same
+    # window and num_std — entry at z < -threshold is exactly the lower Bollinger Band.
+    # The function exists so cross-sectional z-score workflows can call a consistent interface.
+    prices = np.asarray(series, dtype=float)
+
+    ma     = moving_average(prices, window)
+    std    = rolling_std(prices, window)
+
+    with np.errstate(invalid='ignore', divide='ignore'):
+        zscore = np.where(std > 0, (prices - ma) / std, np.nan)
+
+    valid      = ~np.isnan(zscore)
+    entry_mask = valid & (zscore < -threshold)
+    exit_mask  = valid & (zscore > 0)
+
+    signal     = _vectorised_signal(entry_mask, exit_mask)
+    pos_change = np.concatenate(([0.0], signal[1:] - signal[:-1]))
+
+    signals_df = pd.DataFrame(index=series.index)
+    signals_df['signal']          = signal
+    signals_df['zscore']          = zscore
+    signals_df['position_change'] = pos_change
+    return signals_df
