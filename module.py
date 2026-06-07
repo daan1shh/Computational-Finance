@@ -498,7 +498,7 @@ def compute_deflated_sharpe(sharpe, n_trials, n_observations, skewness=0.0, kurt
     dsr = _phi(z)
 
     return dsr, sr_star
-
+# testing comment
 
 ### PARAMETER GRID SEARCH
 # Literature:
@@ -722,12 +722,12 @@ def bollinger_signal(series, window=20, num_std=2):
     return signals_df
 
 
-def zscore_signal(series, window=20, threshold=2.0):
-    # Buy when the rolling z-score drops below -threshold (price > threshold std devs below mean)
+def zscore_signal(series, window=20, entry_threshold=2.0):
+    # Buy when the rolling z-score drops below -entry_threshold (price > entry_threshold std devs below mean)
     # Sell when z-score reverts back above 0 (price crosses back to rolling mean)
     #
     # On a single asset this is mathematically equivalent to bollinger_signal with the same
-    # window and num_std — entry at z < -threshold is exactly the lower Bollinger Band.
+    # window and num_std — entry at z < -entry_threshold is exactly the lower Bollinger Band.
     # The function exists so cross-sectional z-score workflows can call a consistent interface.
     prices = np.asarray(series, dtype=float)
 
@@ -738,7 +738,7 @@ def zscore_signal(series, window=20, threshold=2.0):
         zscore = np.where(std > 0, (prices - ma) / std, np.nan)
 
     valid      = ~np.isnan(zscore)
-    entry_mask = valid & (zscore < -threshold)
+    entry_mask = valid & (zscore < -entry_threshold)
     exit_mask  = valid & (zscore > 0)
 
     signal     = _vectorised_signal(entry_mask, exit_mask)
