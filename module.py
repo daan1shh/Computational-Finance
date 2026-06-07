@@ -4,7 +4,6 @@
 ### WRITE COMMENTS TO PROVIDE EXTRA CONTEXT
 ### ONLY USE NUMPY FOR PERFORMING NUMERICAL COMPUTATIONS
 
-#bskdfbkdb
 ### IMPORTS
 
 import numpy as np
@@ -498,7 +497,6 @@ def compute_deflated_sharpe(sharpe, n_trials, n_observations, skewness=0.0, kurt
     dsr = _phi(z)
 
     return dsr, sr_star
-# testing comment
 
 ### PARAMETER GRID SEARCH
 # Literature:
