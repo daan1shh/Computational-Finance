@@ -720,13 +720,70 @@ def bollinger_signal(series, window=20, num_std=2):
     return signals_df
 
 
-def zscore_signal(series, window=20, entry_threshold=2.0):
-    # Buy when the rolling z-score drops below -entry_threshold (price > entry_threshold std devs below mean)
-    # Sell when z-score reverts back above 0 (price crosses back to rolling mean)
+def exponential_moving_average(prices, span):
+    # Exponential moving average with span-period smoothing factor alpha = 2/(span+1).
+    # Seeded with the SMA of the first `span` observations to reduce initial-value
+    # sensitivity. Returns NaN for the first (span-1) entries (warm-up period).
+    prices_arr = np.asarray(prices, dtype=float)
+    n     = len(prices_arr)
+    alpha = 2.0 / (span + 1)
+    ema   = np.full(n, np.nan)
+    if n < span:
+        return ema
+    ema[span - 1] = np.mean(prices_arr[:span])
+    for i in range(span, n):
+        ema[i] = alpha * prices_arr[i] + (1.0 - alpha) * ema[i - 1]
+    return ema
+
+
+def macd_signal(series, fast_span=12, slow_span=26, signal_span=9):
+    # MACD (Moving Average Convergence Divergence)
     #
-    # On a single asset this is mathematically equivalent to bollinger_signal with the same
-    # window and num_std — entry at z < -entry_threshold is exactly the lower Bollinger Band.
-    # The function exists so cross-sectional z-score workflows can call a consistent interface.
+    # MACD line   = EMA(fast_span) - EMA(slow_span)   ← momentum of price
+    # Signal line = EMA(signal_span) of MACD line     ← smoothed momentum
+    #
+    # Entry: MACD line crosses above signal line (bullish momentum)
+    # Exit:  MACD line crosses below signal line (bearish momentum)
+    #
+    # Parameters: fast_span (default 12), slow_span (default 26), signal_span (default 9)
+    prices = np.asarray(series, dtype=float)
+
+    ema_fast   = exponential_moving_average(prices, fast_span)
+    ema_slow   = exponential_moving_average(prices, slow_span)
+    macd_line  = ema_fast - ema_slow
+
+    # signal line is EMA of macd_line — seed from first valid macd value
+    sig_line   = np.full(len(prices), np.nan)
+    first_valid = slow_span - 1
+    if len(prices) > first_valid + signal_span:
+        macd_valid = macd_line[first_valid:]
+        sig_valid  = exponential_moving_average(macd_valid, signal_span)
+        sig_line[first_valid:] = sig_valid
+
+    histogram  = macd_line - sig_line
+
+    valid      = ~np.isnan(histogram)
+    entry_mask = valid & (macd_line > sig_line)
+    exit_mask  = valid & (macd_line < sig_line)
+
+    signal     = _vectorised_signal(entry_mask, exit_mask)
+    pos_change = np.concatenate(([0.0], signal[1:] - signal[:-1]))
+
+    signals_df = pd.DataFrame(index=series.index)
+    signals_df['signal']          = signal
+    signals_df['macd_line']       = macd_line
+    signals_df['signal_line']     = sig_line
+    signals_df['histogram']       = histogram
+    signals_df['position_change'] = pos_change
+    return signals_df
+
+
+def zscore_signal(series, window=20, entry_threshold=2.0, exit_threshold=0.0):
+    # Buy when z-score drops below -entry_threshold (stock is oversold vs its history)
+    # Sell when z-score rises above +exit_threshold (default 0 = mean; set > 0 to overshoot)
+    #
+    # exit_threshold > 0 lets the position run past the mean, capturing more of the reversion.
+    # entry_threshold controls how far below mean the buy fires (lower = more trades).
     prices = np.asarray(series, dtype=float)
 
     ma     = moving_average(prices, window)
@@ -737,7 +794,7 @@ def zscore_signal(series, window=20, entry_threshold=2.0):
 
     valid      = ~np.isnan(zscore)
     entry_mask = valid & (zscore < -entry_threshold)
-    exit_mask  = valid & (zscore > 0)
+    exit_mask  = valid & (zscore > exit_threshold)
 
     signal     = _vectorised_signal(entry_mask, exit_mask)
     pos_change = np.concatenate(([0.0], signal[1:] - signal[:-1]))
@@ -745,5 +802,88 @@ def zscore_signal(series, window=20, entry_threshold=2.0):
     signals_df = pd.DataFrame(index=series.index)
     signals_df['signal']          = signal
     signals_df['zscore']          = zscore
+    signals_df['position_change'] = pos_change
+    return signals_df
+
+
+def donchian_signal(series, entry_window=20, exit_window=10):
+    # Donchian Channel Breakout — the classic Turtle Trader signal.
+    #
+    # Entry: price breaks above the highest high of the last entry_window days
+    #        (new N-day high = momentum breakout, go long)
+    # Exit:  price drops below the lowest low of the last exit_window days
+    #        (new M-day low = trend exhausted, exit)
+    #
+    # exit_window < entry_window by convention so exits are faster than entries.
+    # Parameters: entry_window (N), exit_window (M)
+    prices = np.asarray(series, dtype=float)
+    n      = len(prices)
+
+    from numpy.lib.stride_tricks import sliding_window_view
+
+    # Entry: price > highest high over last entry_window days (excluding today)
+    entry_high = np.full(n, np.nan)
+    if n > entry_window:
+        wins = sliding_window_view(prices[:-1], entry_window)   # shape (n-entry_window, entry_window)
+        entry_high[entry_window:] = np.max(wins, axis=1)
+
+    # Exit: price < lowest low over last exit_window days (excluding today)
+    exit_low = np.full(n, np.nan)
+    if n > exit_window:
+        wins = sliding_window_view(prices[:-1], exit_window)
+        exit_low[exit_window:] = np.min(wins, axis=1)
+
+    valid      = ~np.isnan(entry_high) & ~np.isnan(exit_low)
+    entry_mask = valid & (prices > entry_high)
+    exit_mask  = valid & (prices < exit_low)
+
+    signal     = _vectorised_signal(entry_mask, exit_mask)
+    pos_change = np.concatenate(([0.0], signal[1:] - signal[:-1]))
+
+    signals_df = pd.DataFrame(index=series.index)
+    signals_df['signal']          = signal
+    signals_df['entry_high']      = entry_high
+    signals_df['exit_low']        = exit_low
+    signals_df['position_change'] = pos_change
+    return signals_df
+
+
+def stochastic_signal(series, k_window=14, d_window=3, oversold=20, overbought=80):
+    # Stochastic Oscillator — measures where the current price sits within its
+    # recent N-day high/low range.
+    #
+    # %K = (price - lowest_low_N) / (highest_high_N - lowest_low_N) * 100
+    # %D = simple moving average of %K over d_window periods (signal line)
+    #
+    # Entry: %K < oversold  (price near bottom of recent range — oversold)
+    # Exit:  %K > overbought (price near top of recent range — overbought)
+    prices = np.asarray(series, dtype=float)
+    n      = len(prices)
+
+    from numpy.lib.stride_tricks import sliding_window_view
+    windows      = sliding_window_view(prices, k_window)
+    highest_high = np.full(n, np.nan)
+    lowest_low   = np.full(n, np.nan)
+    highest_high[k_window - 1:] = np.max(windows, axis=1)
+    lowest_low[k_window - 1:]   = np.min(windows, axis=1)
+
+    denom = highest_high - lowest_low
+    with np.errstate(invalid='ignore', divide='ignore'):
+        pct_k = np.where(denom > 0, (prices - lowest_low) / denom * 100, 50.0)
+    pct_k[:k_window - 1] = np.nan
+
+    pct_d = moving_average(pct_k, d_window)
+
+    valid      = ~np.isnan(pct_k)
+    entry_mask = valid & (pct_k < oversold)
+    exit_mask  = valid & (pct_k > overbought)
+
+    signal     = _vectorised_signal(entry_mask, exit_mask)
+    pos_change = np.concatenate(([0.0], signal[1:] - signal[:-1]))
+
+    signals_df = pd.DataFrame(index=series.index)
+    signals_df['signal']          = signal
+    signals_df['pct_k']           = pct_k
+    signals_df['pct_d']           = pct_d
     signals_df['position_change'] = pos_change
     return signals_df
