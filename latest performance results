@@ -28,45 +28,45 @@
   ── Signal 1 – RSI           |  Technology  —  IN-SAMPLE  (2010–2019) ──
   Metric                   Strategy     S&P 500
   ----------------------------------------------
-  Net Return                803.99%     185.16%
-  CAGR                       24.68%      11.07%
-  Ann. Volatility            34.11%      14.76%
-  Sharpe Ratio                0.816       0.785
-  Sortino Ratio               1.231       1.099
-  Calmar Ratio                0.429       0.560
-  Max Drawdown              -57.58%     -19.78%
+  Net Return                596.39%     185.16%
+  CAGR                       21.47%      11.07%
+  Ann. Volatility            21.92%      14.76%
+  Sharpe Ratio                0.997       0.785
+  Sortino Ratio               1.497       1.099
+  Calmar Ratio                0.845       0.560
+  Max Drawdown              -25.41%     -19.78%
 
   ── Signal 1 – RSI           |  Technology  —  OUT-OF-SAMPLE  (2020–2025) ──
   Metric                   Strategy     S&P 500
   ----------------------------------------------
-  Net Return                128.19%     111.68%
-  CAGR                       14.80%      13.37%
-  Ann. Volatility            35.03%      20.92%
-  Sharpe Ratio                0.569       0.705
-  Sortino Ratio               0.844       0.992
-  Calmar Ratio                0.279       0.394
-  Max Drawdown              -53.13%     -33.92%
+  Net Return                 60.30%     111.68%
+  CAGR                        8.22%      13.37%
+  Ann. Volatility            29.69%      20.92%
+  Sharpe Ratio                0.415       0.705
+  Sortino Ratio               0.600       0.992
+  Calmar Ratio                0.199       0.394
+  Max Drawdown              -41.34%     -33.92%
 
 
-  ── Signal 2 – MACD          |  Energy  —  IN-SAMPLE  (2010–2019) ──
+  ── Signal 2 – MACD          |  Consumer Discretionary  —  IN-SAMPLE  (2010–2019) ──
   Metric                   Strategy     S&P 500
   ----------------------------------------------
-  Net Return                 57.90%     185.16%
-  CAGR                        4.68%      11.07%
-  Ann. Volatility            11.66%      14.76%
-  Sharpe Ratio                0.451       0.785
-  Sortino Ratio               0.649       1.099
-  Calmar Ratio                0.139       0.560
-  Max Drawdown              -33.78%     -19.78%
+  Net Return                185.76%     185.16%
+  CAGR                       11.09%      11.07%
+  Ann. Volatility            13.26%      14.76%
+  Sharpe Ratio                0.860       0.785
+  Sortino Ratio               1.269       1.099
+  Calmar Ratio                0.666       0.560
+  Max Drawdown              -16.67%     -19.78%
 
-  ── Signal 2 – MACD          |  Energy  —  OUT-OF-SAMPLE  (2020–2025) ──
+  ── Signal 2 – MACD          |  Consumer Discretionary  —  OUT-OF-SAMPLE  (2020–2025) ──
   Metric                   Strategy     S&P 500
   ----------------------------------------------
-  Net Return                 61.93%     111.68%
-  CAGR                        8.40%      13.37%
-  Ann. Volatility            21.18%      20.92%
-  Sharpe Ratio                0.486       0.705
-  Sortino Ratio               0.753       0.992
-  Calmar Ratio                0.274       0.394
-  Max Drawdown              -30.64%     -33.92%
+  Net Return                  9.31%     111.68%
+  CAGR                        1.50%      13.37%
+  Ann. Volatility            17.09%      20.92%
+  Sharpe Ratio                0.173       0.705
+  Sortino Ratio               0.241       0.992
+  Calmar Ratio                0.037       0.394
+  Max Drawdown              -40.48%     -33.92%
 
