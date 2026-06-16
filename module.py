@@ -572,8 +572,9 @@ def grid_search_parameters(signal_fn, price_series, param_grid, metric_fn=None,
             if n_completed < minimum_trades:
                 score = np.nan
             else:
-                strat_r = (daily_returns * sig_arr)[1:]
-                score   = metric_fn(strat_r)
+                position = np.concatenate(([0.0], sig_arr[:-1]))
+                strat_r  = (daily_returns * position)[1:]
+                score    = metric_fn(strat_r)
         except Exception:
             # Invalid combination (e.g. short_window >= long_window)
             score = np.nan
@@ -806,7 +807,7 @@ def zscore_signal(series, window=20, entry_threshold=2.0, exit_threshold=0.0):
     return signals_df
 
 
-def donchian_signal(series, entry_window=20, exit_window=10):
+def donchian_signal(series, window=55, entry_window=None, exit_window=None):
     # Donchian Channel Breakout — the classic Turtle Trader signal.
     #
     # Entry: price breaks above the highest high of the last entry_window days
@@ -814,8 +815,14 @@ def donchian_signal(series, entry_window=20, exit_window=10):
     # Exit:  price drops below the lowest low of the last exit_window days
     #        (new M-day low = trend exhausted, exit)
     #
-    # exit_window < entry_window by convention so exits are faster than entries.
-    # Parameters: entry_window (N), exit_window (M)
+    # Use window for a symmetric channel, or pass entry_window and exit_window
+    # separately for Turtle-style faster exits. The channel excludes today's
+    # close; the backtest should still lag the resulting signal by one day.
+    if entry_window is None:
+        entry_window = window
+    if exit_window is None:
+        exit_window = window
+
     prices = np.asarray(series, dtype=float)
     n      = len(prices)
 
