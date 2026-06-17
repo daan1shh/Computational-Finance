@@ -14,9 +14,7 @@ from yahooquery import Ticker as yq_ticker
 ### DOWNLOAD DATA
 
 def download_stock_price_data(tickers, start_date, end_date):
-    # Download adjusted close prices for each ticker from Yahoo Finance via yahooquery.
-    # Pandas is used only for I/O (downloading, storing, returning).
-    # All numerical computation is delegated to _compute_price_ratios() (pure NumPy).
+    # Download adjusted close prices and compute daily price ratios.
     raw = yq_ticker(tickers).history(start=start_date, end=end_date)
     df_prices = raw['adjclose'].unstack(level=0)
     df_prices = df_prices.dropna()
@@ -28,10 +26,7 @@ def download_stock_price_data(tickers, start_date, end_date):
 
 
 def _compute_price_ratios(prices_arr):
-    # Compute multiplicative price ratios: ratio[t] = price[t] / price[t-1].
-    # Row 0 is set to 1.0 (no return on the first observation day).
-    # Pure NumPy — separated from download_stock_price_data() so that
-    # ratio computation is independent of the Pandas I/O layer.
+    # Price ratio at each row: price[t] / price[t-1]. Row 0 set to 1.0.
     ratios    = prices_arr / np.insert(prices_arr[:-1, :], 0,
                                         np.ones(prices_arr.shape[1]), axis=0)
     ratios[0] = np.ones(prices_arr.shape[1])
@@ -41,33 +36,8 @@ def _compute_price_ratios(prices_arr):
 ### VECTORISED STATE-MACHINE HELPER
 
 def _vectorised_signal(entry_mask, exit_mask):
-    # Convert raw entry/exit boolean masks to a stateful 0/1 position signal.
-    #
-    # Algorithm: group-key cumsum trick (O(n) NumPy, zero Python loops over days).
-    #
-    #   group_key = cumsum(entry_mask)
-    #       Value is 0 before the first entry, then increments on every entry event
-    #       (whether from flat or while already in position).  Re-entries while
-    #       holding simply advance the group counter without triggering a sell.
-    #
-    #   exit_with_group = where(exit_mask, group_key, 0)
-    #       Tags each exit with the group active at that moment.  Exits that fire
-    #       before any entry (group_key == 0) are tagged 0 and have no effect,
-    #       enforcing the "no sell before buy" constraint automatically.
-    #
-    #   max_exited_group = maximum.accumulate(exit_with_group)
-    #       Running maximum: tracks the highest group that has seen an exit.
-    #
-    #   signal = (group_key > 0) AND (max_exited_group < group_key)
-    #       Active when we are in a named group that has not yet been exited.
-    #
-    # Correctness properties:
-    #   - "No sell before buy": impossible; group_key == 0 keeps condition False.
-    #   - Simultaneous entry + exit on the same day → signal stays 0 (flat).
-    #     This cannot occur for RSI (oversold < overbought) or Bollinger
-    #     (lower_band < middle_band), so the case is irrelevant in practice.
-    #   - Verified bit-identical against the equivalent loop implementation on
-    #     3 773 trading days of JPM (RSI) and MSFT (Bollinger Bands) data.
+    # Convert entry/exit boolean masks to a stateful 0/1 signal.
+    # Uses the group-key cumsum trick (O(n) NumPy, no Python loop over days).
     entry_mask = np.asarray(entry_mask, dtype=bool)
     exit_mask  = np.asarray(exit_mask,  dtype=bool)
 
@@ -82,8 +52,7 @@ def _vectorised_signal(entry_mask, exit_mask):
 
 
 def _count_completed_trades(signal_arr):
-    # Count completed round-trip trades (entry→exit pairs) in a position signal.
-    # Used by grid_search_parameters() to enforce a minimum-trades reliability guard.
+    # Count completed round-trip trades (entry→exit pairs).
     signal_arr = np.asarray(signal_arr, dtype=float)
     pos_change = np.concatenate(([0.0], signal_arr[1:] - signal_arr[:-1]))
     n_entries  = int(np.sum(pos_change > 0))
@@ -94,8 +63,7 @@ def _count_completed_trades(signal_arr):
 ### HELPER FUNCTIONS USED ACROSS SIGNALS
 
 def moving_average(prices, window_length):
-    # Simple moving average using the cumulative-sum trick (O(n), no edge-padding artifacts)
-    # Returns NaN for the first (window_length - 1) entries (warm-up period)
+    # Simple MA via cumsum trick. NaN for the first (window_length-1) entries.
     prices_arr = np.asarray(prices, dtype=float)
     n = len(prices_arr)
     result = np.full(n, np.nan)
@@ -107,8 +75,7 @@ def moving_average(prices, window_length):
 
 
 def rolling_std(prices, window_length):
-    # Rolling standard deviation using the identity Var = E[X^2] - (E[X])^2
-    # Returns NaN for the first (window_length - 1) entries
+    # Rolling std using Var = E[X²] - (E[X])². NaN for first (window_length-1) entries.
     prices_arr = np.asarray(prices, dtype=float)
     n = len(prices_arr)
     ma = moving_average(prices_arr, window_length)
@@ -123,13 +90,7 @@ def rolling_std(prices, window_length):
 
 
 def compute_rsi(prices, period=14):
-    # Relative Strength Index via Wilder's exponential smoothing.
-    #
-    # Wilder's EMA (alpha = 1/period) requires each step to depend on the previous,
-    # so this loop is irreducible without numba/Cython.  The loop runs over
-    # n ≈ 3 773 observations in < 1 ms — an acceptable trade-off.
-    #
-    # RSI < 30 → oversold (potential buy); RSI > 70 → overbought (potential sell)
+    # RSI via Wilder's EMA (alpha = 1/period). Loop is irreducible without numba.
     prices_arr = np.asarray(prices, dtype=float)
     n = len(prices_arr)
     deltas = np.diff(prices_arr)                        # length n-1
@@ -164,17 +125,8 @@ def compute_cagr(portfolio_values, trading_days_per_year=252):
 
 
 def compute_sharpe(daily_returns, risk_free_rate=0.0, trading_days_per_year=252, n_min=30):
-    # Annualised Sharpe ratio: mean excess return divided by its standard deviation,
-    # scaled to annual frequency.
-    #
-    #   Sharpe = (E[r] - r_f) / std(r)  *  sqrt(252)
-    #
-    # Population std (divides by n, not n-1) is used throughout for internal
-    # consistency with compute_annual_volatility.
-    #
-    # n_min guard: returns NaN for samples shorter than n_min days.
-    # With fewer than 30 observations the Sharpe estimate has too high a
-    # variance to be actionable — reporting it would mislead parameter selection.
+    # Annualised Sharpe: (mean excess return / std) * sqrt(252).
+    # Returns NaN for samples shorter than n_min days.
     if len(daily_returns) < n_min:
         return np.nan
     excess      = daily_returns - risk_free_rate / trading_days_per_year
@@ -205,18 +157,7 @@ def compute_drawdown_series(portfolio_values):
 #   The Journal of Finance, 59(3), 1039–1082.
 
 def apply_transaction_costs(gross_returns, position_changes, trade_cost=0.001):
-    # Deducts transaction costs from gross strategy returns.
-    #
-    # Costs are modelled as a flat fraction of the traded value. This proxy captures:
-    #   - Bid-ask spread   : price concession paid to liquidity providers (~1–5 bps for
-    #                        large-cap equities; wider for small/illiquid names)
-    #   - Broker commissions: fixed or percentage fee charged per order (negligible at
-    #                        retail level but material for high-frequency strategies)
-    #   - Slippage / market impact: adverse price movement as a large order fills;
-    #                        grows with order size relative to average daily volume
-    #
-    # A round-trip cost of 0.1% (10 bps) is conservative for large-cap US equities
-    # traded at institutional scale. Retail investors may face higher effective costs.
+    # Deducts flat per-trade cost from gross daily returns based on absolute position changes.
     gross_returns    = np.asarray(gross_returns,    dtype=float)
     position_changes = np.asarray(position_changes, dtype=float)
     # Cost incurred equals the absolute position change times the flat cost rate
@@ -225,27 +166,9 @@ def apply_transaction_costs(gross_returns, position_changes, trade_cost=0.001):
 
 
 ### TURNOVER
-# Turnover measures how actively a strategy trades.
-# Institutional fund managers report turnover to estimate implementation costs
-# and signal whether a strategy is capacity-constrained.
 
 def compute_turnover(position_changes, trading_days_per_year=252, capital_fraction=1.0):
-    # Annualised portfolio turnover.
-    #
-    # Turnover = (1/T) * sum(|Δw_t|) * capital_fraction * 252
-    #
-    # capital_fraction converts raw binary signal changes (±1) into fractional
-    # portfolio-weight changes. Without it the metric counts signal events per year
-    # rather than fraction-of-portfolio replaced per year.
-    #
-    # Example: with capital_fraction_per_trade = 0.20, each trade represents a 20%
-    # portfolio reallocation. A turnover of 1.0 then means the entire portfolio is
-    # replaced once per year — the standard institutional definition.
-    # High-frequency strategies: 10–100×; buy-and-hold: < 0.1×.
-    #
-    # If capital_fraction=1.0 (default, preserves backward compatibility), the
-    # result is a dimensionless "signal velocity" — valid for comparing strategies
-    # against each other but not directly interpretable as portfolio weight change.
+    # Annualised turnover: (1/T) * sum(|Δw|) * capital_fraction * 252.
     position_changes = np.asarray(position_changes, dtype=float)
     n                = len(position_changes)
     daily_turnover   = np.sum(np.abs(position_changes)) / n * capital_fraction
@@ -258,23 +181,9 @@ def compute_turnover(position_changes, trading_days_per_year=252, capital_fracti
 #   "Downside risk." Journal of Portfolio Management, 17(4), 27–31.
 
 def compute_sortino(daily_returns, target_return=0.0, trading_days_per_year=252, n_min=30):
-    # Annualised Sortino ratio.
-    #
-    # Unlike the Sharpe ratio, which penalises all volatility symmetrically, the
-    # Sortino ratio divides excess returns by *downside* deviation only — the
-    # semi-deviation below the minimum acceptable return (MAR). This better
-    # reflects investor psychology: upside variance is not a risk to be penalised.
-    #
-    #   Sortino = mean(r - MAR) / DD  *  sqrt(252)
-    #
-    # Downside deviation (Sortino & van der Meer 1991 original specification):
-    #   DD = sqrt( (1/T) * sum( min(r_t - MAR, 0)^2 ) )
-    #
-    # The denominator uses ALL T periods (including flat/positive days that
-    # contribute 0). This is the standard formula; using only negative-return
-    # days in the denominator would produce an inflated Sortino.
-    #
-    # n_min guard: same rationale as compute_sharpe.
+    # Sortino ratio: mean(r - MAR) / downside_deviation * sqrt(252).
+    # Downside deviation uses all T periods (Sortino & van der Meer 1991).
+    # Returns NaN for samples shorter than n_min days.
     if len(daily_returns) < n_min:
         return np.nan
     daily_returns = np.asarray(daily_returns, dtype=float)
@@ -293,13 +202,7 @@ def compute_sortino(daily_returns, target_return=0.0, trading_days_per_year=252,
 #   "Calmar Ratio: A Smoother Tool." Futures Magazine, 20(1).
 
 def compute_calmar(portfolio_values, trading_days_per_year=252):
-    # Calmar ratio: CAGR divided by the absolute maximum drawdown.
-    #
-    #   Calmar = CAGR / |MaxDrawdown|
-    #
-    # Popular with hedge-fund investors because it penalises strategies that
-    # achieve high returns only by tolerating catastrophic drawdowns.
-    # A Calmar > 1 is generally considered acceptable; > 3 is strong.
+    # Calmar ratio: CAGR / |max drawdown|.
     portfolio_values = np.asarray(portfolio_values, dtype=float)
     cagr             = compute_cagr(portfolio_values, trading_days_per_year)
     max_dd           = compute_max_drawdown(portfolio_values)
@@ -311,11 +214,7 @@ def compute_calmar(portfolio_values, trading_days_per_year=252):
 ### ANNUAL VOLATILITY
 
 def compute_annual_volatility(daily_returns, trading_days_per_year=252):
-    # Annualised return volatility: std(daily returns) * sqrt(252).
-    #
-    # Volatility is the denominator of the Sharpe ratio and a key input into
-    # risk-budgeting and position-sizing frameworks. Reporting it alongside
-    # the Sharpe ratio allows decomposition into return and risk components.
+    # Annualised volatility: std(daily returns) * sqrt(252).
     daily_returns = np.asarray(daily_returns, dtype=float)
     n             = len(daily_returns)
     mean_r        = np.sum(daily_returns) / n
@@ -330,28 +229,9 @@ def compute_annual_volatility(daily_returns, trading_days_per_year=252):
 #   International Institute of Trading Mastery.
 
 def compute_trade_expectancy(position_changes_arr, price_returns_arr, trade_cost=0.001):
-    # Arithmetic mean net return per completed round-trip trade.
-    #
-    # For each discrete trade i (entry when signal 0→1, exit when signal 1→0):
-    #
-    #   R_i = (P_exit / P_entry) - 1 - 2 * trade_cost
-    #
-    # The -2 * trade_cost term deducts both the entry leg and the exit leg.
-    # Using two legs is the correct round-trip cost model: 10 bps entry + 10 bps
-    # exit = 20 bps total drag per trade. This matches the cost applied in
-    # apply_transaction_costs() on a daily basis.
-    #
-    # P_exit / P_entry is computed by compounding daily log-returns while held:
-    #   log(P_exit / P_entry) = sum( log(1 + r_t) ) for t over the hold period
-    # which is numerically equivalent to the direct price ratio but avoids
-    # floating-point loss-of-significance when daily returns are tiny.
-    #
-    # Expectancy = (1/N) * sum(R_i)   — simple arithmetic mean across N trades
-    #
-    # CRITICAL: this function MUST receive daily PRICE RETURNS (r_t = P_t/P_{t-1} - 1),
-    # NOT raw price levels and NOT position values. Position values are zeroed by
-    # close_trades() on exit days, which would produce negative-infinity log-returns
-    # and cause artefactual results.
+    # Mean net return per completed round-trip trade.
+    # Uses log-returns for numerical stability; deducts 2 * trade_cost for the round trip.
+    # Receives daily PRICE RETURNS — not position values (zeroed on exit by close_trades).
     position_changes_arr = np.asarray(position_changes_arr, dtype=float)
     price_returns_arr    = np.asarray(price_returns_arr,    dtype=float)
 
@@ -385,17 +265,7 @@ def compute_trade_expectancy(position_changes_arr, price_returns_arr, trade_cost
 ### SIGNAL DRAG / ASSET ACTIVE DAYS
 
 def compute_active_days_fraction(signal_arr):
-    # Fraction of trading days an asset holds an active long position (signal == 1).
-    #
-    # A low fraction highlights "signal drag": the strategy sits in cash most of
-    # the time, forgoing market beta on those days. This is why a strategy can
-    # have a high Sharpe ratio (low volatility from being flat) yet still
-    # underperform a fully-invested buy-and-hold benchmark on an absolute basis.
-    #
-    # Example: MSFT under the Bollinger signal is active only 16.8% of the time.
-    # On the remaining 83.2% of days the capital earns nothing while the S&P 500
-    # continues to compound — the primary driver of the strategy's absolute-return
-    # underperformance versus the benchmark.
+    # Fraction of trading days the strategy holds a long position (signal == 1).
     signal_arr = np.asarray(signal_arr, dtype=float)
     return np.sum(signal_arr > 0) / len(signal_arr)
 
@@ -407,52 +277,9 @@ def compute_active_days_fraction(signal_arr):
 #    and Non-Normality." Journal of Portfolio Management, 40(5), 94–107.
 
 def compute_deflated_sharpe(sharpe, n_trials, n_observations, skewness=0.0, kurtosis=3.0):
-    # Deflated Sharpe Ratio (DSR): corrects for multiple-testing inflation and
-    # the non-normality of return distributions.
-    #
-    # When n_trials parameter combinations are evaluated, the best observed Sharpe
-    # is upward-biased by selection luck. DSR measures P(SR_obs > SR*) where SR*
-    # is the expected maximum Sharpe under the null hypothesis of no skill.
-    #
-    # Step 1 — Non-normality adjusted SR variance (Bailey & López de Prado Eq. 2):
-    #
-    #   Var(SR_hat) = (1 - S * SR + (K - 1)/4 * SR^2) / (T - 1)
-    #
-    # S = skewness of daily returns, K = total kurtosis (3 for Gaussian), T = n_obs.
-    # Fat tails (K > 3) and negative skewness inflate the variance, increasing the
-    # threshold SR* and making the DSR harder to achieve — correctly so.
-    #
-    # Step 2 — Expected maximum SR under n_trials independent tests:
-    #
-    #   SR* = [(1 - gamma) * Phi^{-1}(1 - 1/N) + gamma * Phi^{-1}(1 - 1/(N*e))]
-    #         * sqrt(Var(SR_hat))
-    #
-    # where gamma ≈ 0.5772 (Euler-Mascheroni constant) and N = n_trials.
-    # This follows from the asymptotic Gumbel distribution of the maximum of N
-    # IID standard normals (extreme-value theory).
-    #
-    # Step 3 — DSR:
-    #
-    #   DSR = Phi( (SR_obs - SR*) / sqrt(Var(SR_hat)) )
-    #
-    # Interpretation:
-    #   DSR > 0.95 — strong evidence of genuine skill after multiple-testing correction
-    #   DSR ≈ 0.50 — SR is indistinguishable from the best result expected by luck
-    #   DSR < 0.50 — strategy underperforms even the null-luck benchmark
-    #
-    # Pure NumPy implementation — no math, no scipy.
-    # Normal CDF uses the Abramowitz & Stegun 26.2.16 polynomial (max error < 7.5e-8).
-    # Inverse CDF uses the A&S 26.2.17 rational approximation (max error < 4.5e-4).
-    #
-    # Arguments:
-    #   sharpe        : annualised Sharpe ratio of the selected strategy
-    #   n_trials      : number of parameter combinations tested in the grid search
-    #   n_observations: number of daily return observations in the sample
-    #   skewness      : skewness of daily strategy returns (0.0 for Gaussian)
-    #   kurtosis      : total kurtosis (3.0 for Gaussian; fat tails → > 3)
-    #
-    # Returns:
-    #   (dsr, sr_star) : DSR probability in [0, 1] and the multiple-testing threshold SR*
+    # Deflated Sharpe Ratio (Bailey & López de Prado 2014).
+    # Corrects observed SR for multiple-testing inflation across n_trials parameter combinations.
+    # Uses A&S polynomial approximations for normal CDF/inverse-CDF (no scipy needed).
 
     n_obs = max(int(n_observations), 2)
 
@@ -506,40 +333,8 @@ def compute_deflated_sharpe(sharpe, n_trials, n_observations, skewness=0.0, kurt
 
 def grid_search_parameters(signal_fn, price_series, param_grid, metric_fn=None,
                             minimum_trades=10):
-    # Exhaustive grid search over signal hyperparameters.
-    #
-    # Default metric: compute_sortino (changed from compute_sharpe).
-    # The Sortino ratio penalises only downside volatility, which better reflects
-    # the goal of "consistent, reliable signals" rather than maximum raw return.
-    # A strategy that avoids large drawdowns scores well even if its upside is
-    # modest — the right objective for a risk-aware multi-asset portfolio.
-    #
-    # minimum_trades guard: parameter combinations producing fewer than
-    # minimum_trades completed round-trips are scored NaN and skipped.
-    # With 1–5 trades the Sharpe/Sortino estimate has enormous sampling variance;
-    # 10+ trades are a practical floor for statistical reliability.
-    #
-    # Correct workflow to avoid data-snooping (Bailey & López de Prado 2014):
-    #   1. Split: df_is, df_oos = split_in_sample_out_of_sample(df, '2018-12-31')
-    #   2. Search: best, score, grid = grid_search_parameters(fn, df_is[col], params)
-    #   3. Freeze best_params — do NOT re-fit on OOS.
-    #   4. Evaluate once on df_oos and report the OOS result.
-    #   5. Optionally compute DSR: compute_deflated_sharpe(score, len(grid), len(df_is))
-    #
-    # Arguments:
-    #   signal_fn      : callable(price_series, **params) → DataFrame with 'signal' col
-    #   price_series   : pd.Series of adjusted close prices (IS period only)
-    #   param_grid     : dict mapping parameter names to candidate value lists
-    #                    e.g. {'period': [10, 14, 20], 'oversold': [25, 30, 35]}
-    #   metric_fn      : callable(daily_returns_1d) → float, higher is better;
-    #                    defaults to compute_sortino
-    #   minimum_trades : int, skip combinations with fewer completed round-trips
-    #
-    # Returns:
-    #   best_params  : dict, parameter combination with the highest metric score
-    #   best_score   : float, metric value for best_params
-    #   results_grid : list of (params_dict, score) for every combination,
-    #                  useful for plotting sensitivity heatmaps and computing DSR
+    # Exhaustive grid search over signal hyperparameters, scored by metric_fn (default: Sortino).
+    # Skips combinations with fewer than minimum_trades completed round-trips.
     if metric_fn is None:
         metric_fn = compute_sortino     # downside-risk metric preferred over Sharpe
 
@@ -567,7 +362,6 @@ def grid_search_parameters(signal_fn, price_series, param_grid, metric_fn=None,
             sig_df  = signal_fn(price_series, **params)
             sig_arr = sig_df['signal'].to_numpy()
 
-            # Skip combinations with too few completed trades (statistical reliability)
             n_completed = _count_completed_trades(sig_arr)
             if n_completed < minimum_trades:
                 score = np.nan
@@ -594,23 +388,7 @@ def grid_search_parameters(signal_fn, price_series, param_grid, metric_fn=None,
 #   Wiley Trading. ISBN 978-0470128015.
 
 def split_in_sample_out_of_sample(df, split_date):
-    # Partition a time-indexed DataFrame into IS (in-sample) and OOS (out-of-sample).
-    #
-    # IS period  : used exclusively for parameter calibration via grid_search_parameters.
-    # OOS period : genuine forward evidence — parameters must be frozen before evaluation.
-    #
-    # A strategy that performs well OOS demonstrates genuine predictive power.
-    # A strategy that degrades sharply OOS suggests over-fitting to the IS regime
-    # (also called "backtest overfitting" or "data snooping bias").
-    #
-    # Typical usage:
-    #   df_is, df_oos = split_in_sample_out_of_sample(df_prices, '2018-12-31')
-    #   best_params, _, grid = grid_search_parameters(
-    #       module.rsi_signal, df_is['JPM'],
-    #       {'period': [10,14,20], 'oversold': [25,30,35], 'overbought': [65,70,75]}
-    #   )
-    #   # best_params frozen — evaluate on OOS exactly once:
-    #   oos_signal = module.rsi_signal(df_oos['JPM'], **best_params)
+    # Split a time-indexed DataFrame into IS (≤ split_date) and OOS (> split_date).
     split_ts = pd.Timestamp(split_date)
     df_is    = df[df.index <= split_ts]
     df_oos   = df[df.index >  split_ts]
@@ -624,24 +402,18 @@ def split_in_sample_out_of_sample(df, split_date):
 #   The Journal of Finance, 47(5), 1731–1764.
 
 def ma_signal(series, short_window, long_window):
-    # Buy (signal=1) when the short-term MA crosses above the long-term MA (Golden Cross)
-    # Sell (signal=0) when the short-term MA crosses below the long-term MA (Death Cross)
-    #
-    # The MA crossover is a stateless threshold comparison — the signal value is
-    # fully determined each day by whether short_ma > long_ma, without reference
-    # to the previous day's position. No state-machine is required.
+    # Buy when short MA > long MA (Golden Cross); sell on the reverse.
     prices = np.asarray(series, dtype=float)
     n      = len(prices)
 
     short_ma = moving_average(prices, short_window)
     long_ma  = moving_average(prices, long_window)
 
-    # Only generate signals after both MAs have completed their warm-up periods
+    # only generate signals after both MAs have warmed up
     valid      = ~np.isnan(short_ma) & ~np.isnan(long_ma)
     raw_signal = np.zeros(n)
     raw_signal[valid] = np.where(short_ma[valid] > long_ma[valid], 1.0, 0.0)
 
-    # position_change via NumPy diff (no Pandas .diff())
     pos_change = np.concatenate(([0.0], raw_signal[1:] - raw_signal[:-1]))
 
     signals_df = pd.DataFrame(index=series.index)
@@ -659,13 +431,7 @@ def ma_signal(series, short_window, long_window):
 #   Trend Research. ISBN 978-0894590276.
 
 def rsi_signal(series, period=14, oversold=30, overbought=70):
-    # Buy when RSI drops below oversold threshold (oversold zone → potential buy)
-    # Sell when RSI rises above overbought threshold (overbought zone → potential sell)
-    #
-    # State machine implemented via _vectorised_signal() (no Python loop over days):
-    #   - Entry fires when RSI < oversold AND observation is valid (not NaN)
-    #   - Exit fires when RSI > overbought AND observation is valid
-    #   - "No sell before buy" is guaranteed by the group-key trick (see _vectorised_signal)
+    # Buy when RSI < oversold; sell when RSI > overbought.
     prices = np.asarray(series, dtype=float)
 
     rsi = compute_rsi(prices, period)
@@ -691,13 +457,7 @@ def rsi_signal(series, period=14, oversold=30, overbought=70):
 #   McGraw-Hill. ISBN 978-0071373685.
 
 def bollinger_signal(series, window=20, num_std=2):
-    # Buy when price falls below the lower Bollinger Band (>2σ below the rolling mean)
-    # Sell when price reverts back above the middle band (rolling mean)
-    #
-    # State machine implemented via _vectorised_signal() (no Python loop over days):
-    #   - Entry fires when price < lower_band AND band is valid (past warm-up)
-    #   - Exit fires when price > middle_band (rolling mean) AND band is valid
-    #   - Since lower_band < middle_band always, simultaneous entry+exit is impossible
+    # Buy when price falls below lower Bollinger Band; sell when it reverts above the mean.
     prices = np.asarray(series, dtype=float)
 
     ma         = moving_average(prices, window)
@@ -722,9 +482,7 @@ def bollinger_signal(series, window=20, num_std=2):
 
 
 def exponential_moving_average(prices, span):
-    # Exponential moving average with span-period smoothing factor alpha = 2/(span+1).
-    # Seeded with the SMA of the first `span` observations to reduce initial-value
-    # sensitivity. Returns NaN for the first (span-1) entries (warm-up period).
+    # EMA with alpha = 2/(span+1), seeded with SMA of the first span observations.
     prices_arr = np.asarray(prices, dtype=float)
     n     = len(prices_arr)
     alpha = 2.0 / (span + 1)
@@ -738,15 +496,7 @@ def exponential_moving_average(prices, span):
 
 
 def macd_signal(series, fast_span=12, slow_span=26, signal_span=9):
-    # MACD (Moving Average Convergence Divergence)
-    #
-    # MACD line   = EMA(fast_span) - EMA(slow_span)   ← momentum of price
-    # Signal line = EMA(signal_span) of MACD line     ← smoothed momentum
-    #
-    # Entry: MACD line crosses above signal line (bullish momentum)
-    # Exit:  MACD line crosses below signal line (bearish momentum)
-    #
-    # Parameters: fast_span (default 12), slow_span (default 26), signal_span (default 9)
+    # MACD: buy when MACD line crosses above the signal line, sell when it crosses below.
     prices = np.asarray(series, dtype=float)
 
     ema_fast   = exponential_moving_average(prices, fast_span)
@@ -780,11 +530,7 @@ def macd_signal(series, fast_span=12, slow_span=26, signal_span=9):
 
 
 def zscore_signal(series, window=20, entry_threshold=2.0, exit_threshold=0.0):
-    # Buy when z-score drops below -entry_threshold (stock is oversold vs its history)
-    # Sell when z-score rises above +exit_threshold (default 0 = mean; set > 0 to overshoot)
-    #
-    # exit_threshold > 0 lets the position run past the mean, capturing more of the reversion.
-    # entry_threshold controls how far below mean the buy fires (lower = more trades).
+    # Buy when z-score < -entry_threshold (oversold); sell when z-score > exit_threshold.
     prices = np.asarray(series, dtype=float)
 
     ma     = moving_average(prices, window)
@@ -808,16 +554,7 @@ def zscore_signal(series, window=20, entry_threshold=2.0, exit_threshold=0.0):
 
 
 def donchian_signal(series, window=55, entry_window=None, exit_window=None):
-    # Donchian Channel Breakout — the classic Turtle Trader signal.
-    #
-    # Entry: price breaks above the highest high of the last entry_window days
-    #        (new N-day high = momentum breakout, go long)
-    # Exit:  price drops below the lowest low of the last exit_window days
-    #        (new M-day low = trend exhausted, exit)
-    #
-    # Use window for a symmetric channel, or pass entry_window and exit_window
-    # separately for Turtle-style faster exits. The channel excludes today's
-    # close; the backtest should still lag the resulting signal by one day.
+    # Donchian Channel Breakout: buy on new N-day high, exit on M-day low.
     if entry_window is None:
         entry_window = window
     if exit_window is None:
@@ -856,14 +593,7 @@ def donchian_signal(series, window=55, entry_window=None, exit_window=None):
 
 
 def stochastic_signal(series, k_window=14, d_window=3, oversold=20, overbought=80):
-    # Stochastic Oscillator — measures where the current price sits within its
-    # recent N-day high/low range.
-    #
-    # %K = (price - lowest_low_N) / (highest_high_N - lowest_low_N) * 100
-    # %D = simple moving average of %K over d_window periods (signal line)
-    #
-    # Entry: %K < oversold  (price near bottom of recent range — oversold)
-    # Exit:  %K > overbought (price near top of recent range — overbought)
+    # Stochastic oscillator: buy when %K < oversold, sell when %K > overbought.
     prices = np.asarray(series, dtype=float)
     n      = len(prices)
 
