@@ -1,0 +1,119 @@
+\documentclass[12pt, a4paper]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath, amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{parskip}
+\usepackage{xcolor}
+
+\title{\textbf{Demo \LaTeX{} Document} \\ \large A Quick Tour of Common Features}
+\author{Daanish Muzaffar}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+\tableofcontents
+\newpage
+
+% ─────────────────────────────────────────────
+\section{Introduction}
+
+This document demonstrates common \LaTeX{} features: text formatting,
+mathematics, tables, and lists. \LaTeX{} separates \textit{content} from
+\textit{presentation} --- you write markup and the compiler handles typesetting.
+
+\textbf{Bold}, \textit{italic}, \texttt{monospace}, and
+\textcolor{blue}{coloured text} are all trivial.
+
+% ─────────────────────────────────────────────
+\section{Mathematics}
+
+Inline math sits in the flow of text: $E = mc^2$, or the quadratic formula
+$x = \frac{-b \pm \sqrt{b^2 - 4ac}}{2a}$.
+
+Display equations get their own line and are automatically numbered:
+
+\begin{equation}
+    \int_{-\infty}^{\infty} e^{-x^2}\, dx = \sqrt{\pi}
+\end{equation}
+
+\begin{equation}
+    \hat{\sigma}^2 = \frac{1}{T} \sum_{t=1}^{T} \min(r_t - \text{MAR},\; 0)^2
+\end{equation}
+
+Aligned multi-line equations use the \texttt{align} environment:
+
+\begin{align}
+    \text{Sharpe}  &= \frac{\mu_r - r_f}{\sigma_r} \cdot \sqrt{252} \\[4pt]
+    \text{Sortino} &= \frac{\mu_r - \text{MAR}}{\hat{\sigma}} \cdot \sqrt{252}
+\end{align}
+
+% ─────────────────────────────────────────────
+\section{Lists}
+
+\subsection{Bullet list}
+\begin{itemize}
+    \item MA Crossover --- trend-following via short/long moving average gap
+    \item RSI --- mean-reversion triggered by oversold/overbought thresholds
+    \item Donchian Channel --- breakout when price exceeds the $N$-day high
+\end{itemize}
+
+\subsection{Numbered list}
+\begin{enumerate}
+    \item Download price data
+    \item Split into in-sample and out-of-sample windows
+    \item Optimise parameters on in-sample Sortino ratio
+    \item Evaluate frozen parameters on out-of-sample data
+\end{enumerate}
+
+% ─────────────────────────────────────────────
+\section{Tables}
+
+\begin{table}[h]
+    \centering
+    \caption{Signal-to-Basket Assignment}
+    \begin{tabular}{llll}
+        \toprule
+        \textbf{Signal} & \textbf{Basket} & \textbf{ETF} & \textbf{IS Sortino} \\
+        \midrule
+        MA Crossover      & Financials   & XLF & 1.11 \\
+        RSI               & Technology   & XLK & 0.94 \\
+        Donchian Channel  & Health Care  & XLV & 0.87 \\
+        \bottomrule
+    \end{tabular}
+    \label{tab:signals}
+\end{table}
+
+% ─────────────────────────────────────────────
+\section{Useful Environments}
+
+A block quote for referencing sources:
+
+\begin{quote}
+    ``The Sortino ratio penalises only downside deviation, making it more
+    appropriate than the Sharpe ratio for asymmetric return distributions.''
+    \hfill --- Sortino \& van der Meer (1991)
+\end{quote}
+
+Verbatim code:
+
+\begin{verbatim}
+def donchian_signal(prices, window=55):
+    high = prices.rolling(window).max().shift(1)
+    return (prices > high).astype(int)
+\end{verbatim}
+
+% ─────────────────────────────────────────────
+\section{Conclusion}
+
+That covers the essentials. Compile with:
+\begin{center}
+    \texttt{pdflatex demo.tex}
+\end{center}
+or use an online editor like \href{https://www.overleaf.com}{Overleaf} if you
+don't have a local \LaTeX{} distribution installed.
+
+\end{document}
