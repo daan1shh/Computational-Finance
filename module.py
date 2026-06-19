@@ -684,3 +684,73 @@ def draw_heatmap(ax, data, row_labels, col_labels, row_title, col_title,
                         ha='center', va='center', fontsize=7, color=tc,
                         fontweight='bold' if marker else 'normal')
     plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label=colorbar_label)
+
+
+### PORTFOLIO SIMULATION (target-weight, 1-day lag, cash account)
+
+def run_portfolio_sim(traded_tickers, df_prices, df_position_changes,
+                      df_price_changes, init_cash=1.0):
+    # Target-weight portfolio simulation with 1-day execution lag.
+    # Each new long position receives (portfolio_value / n_tickers) of capital.
+    # Returns a DataFrame with one column per ticker + 'cash'.
+    traded_tickers = list(traded_tickers)
+    n_etfs = len(traded_tickers)
+
+    # Apply 1-day execution lag to position changes
+    raw_pc    = df_position_changes.to_numpy()
+    lagged_pc = np.vstack([np.zeros((1, raw_pc.shape[1])), raw_pc[:-1]])
+    df_pos_exec = pd.DataFrame(lagged_pc,
+                               index=df_position_changes.index,
+                               columns=df_position_changes.columns)
+
+    def _open(position, pos_chg):
+        total     = float(np.nansum(position))
+        target    = total / n_etfs
+        vec       = np.maximum(np.array([pos_chg[t] for t in traded_tickers],
+                                        dtype=float), 0.0)
+        invest    = vec * target
+        cash      = position[-1]
+        total_buy = float(np.nansum(invest))
+        if total_buy > cash and total_buy > 0:
+            invest = invest * (cash / total_buy)
+        return np.append(invest + position[:-1],
+                         cash - float(np.nansum(invest)))
+
+    def _hold(position, price_change):
+        return np.concatenate(
+            (position[:-1] * price_change[:n_etfs], [position[-1]]))
+
+    def _close(position, pos_chg):
+        vec = np.concatenate(
+            ([pos_chg[t] < 0.0 for t in traded_tickers], [False]))
+        position[-1] += np.sum(position[vec])
+        position[vec]  = 0.0
+        return position
+
+    rows     = []
+    is_first = True
+    for idx, pos_chg in df_pos_exec.iterrows():
+        if is_first:
+            rows.append(_open(
+                np.concatenate((np.zeros(n_etfs), [init_cash])), pos_chg))
+            is_first = False
+        else:
+            hp = _hold(rows[-1].copy(),
+                       df_price_changes.loc[[idx]].to_numpy()[0])
+            hp = _close(hp, pos_chg)
+            rows.append(_open(hp, pos_chg))
+
+    return pd.DataFrame(rows,
+                        index=df_prices.index,
+                        columns=traded_tickers + ['cash']), df_pos_exec
+
+
+def compute_win_rate(position_changes_arr, price_returns_arr):
+    # Fraction of completed round-trip trades with a non-negative gross log-return.
+    # Uses gross returns (no cost deduction) so win/loss reflects pure price movement.
+    trade_returns = _collect_trade_returns(
+        position_changes_arr, price_returns_arr, trade_cost=0.0)
+    if len(trade_returns) == 0:
+        return np.nan
+    wins = int(np.sum(np.asarray(trade_returns, dtype=float) >= 0))
+    return wins / len(trade_returns)
