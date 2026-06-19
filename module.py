@@ -8,6 +8,7 @@
 
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
 from yahooquery import Ticker as yq_ticker
 
 
@@ -228,10 +229,10 @@ def compute_annual_volatility(daily_returns, trading_days_per_year=252):
 #   Tharp, V. K. (2008). "Van Tharp's Definitive Guide to Position Sizing."
 #   International Institute of Trading Mastery.
 
-def compute_trade_expectancy(position_changes_arr, price_returns_arr, trade_cost=0.001):
-    # Mean net return per completed round-trip trade.
-    # Uses log-returns for numerical stability; deducts 2 * trade_cost for the round trip.
-    # Receives daily PRICE RETURNS — not position values (zeroed on exit by close_trades).
+def _collect_trade_returns(position_changes_arr, price_returns_arr, trade_cost=0.001):
+    # Return a list of net log-returns for each completed round-trip trade.
+    # Shared by compute_trade_expectancy and any caller that needs the full distribution
+    # (e.g. to compute cross-ticker pooled mean, median, or win-rate on net returns).
     position_changes_arr = np.asarray(position_changes_arr, dtype=float)
     price_returns_arr    = np.asarray(price_returns_arr,    dtype=float)
 
@@ -255,11 +256,18 @@ def compute_trade_expectancy(position_changes_arr, price_returns_arr, trade_cost
                 in_trade = False
                 log_r    = 0.0
 
+    return trade_returns
+
+
+def compute_trade_expectancy(position_changes_arr, price_returns_arr, trade_cost=0.001):
+    # Mean net return per completed round-trip trade.
+    # Uses log-returns for numerical stability; deducts 2 * trade_cost for the round trip.
+    # Receives daily PRICE RETURNS — not position values (zeroed on exit by close_trades).
+    trade_returns = _collect_trade_returns(position_changes_arr, price_returns_arr, trade_cost)
     if len(trade_returns) == 0:
         return np.nan
-
     trade_returns_arr = np.asarray(trade_returns, dtype=float)
-    return np.sum(trade_returns_arr) / len(trade_returns_arr)
+    return float(np.sum(trade_returns_arr) / len(trade_returns_arr))
 
 
 ### SIGNAL DRAG / ASSET ACTIVE DAYS
@@ -324,6 +332,30 @@ def compute_deflated_sharpe(sharpe, n_trials, n_observations, skewness=0.0, kurt
     dsr = _phi(z)
 
     return dsr, sr_star
+
+### BASKET SORTINO — multi-ETF scoring helper
+
+def basket_sortino(signal_fn, df_basket, **params):
+    # Mean IS Sortino across all ETFs in basket with 1-day signal lag.
+    # Returns NaN if any ETF produces zero completed round-trip trades.
+    scores = []
+    for col in df_basket.columns:
+        px  = df_basket[col].to_numpy(dtype=float)
+        dr  = np.concatenate(([0.0], px[1:] / px[:-1] - 1))
+        try:
+            sig = signal_fn(df_basket[col], **params)
+            arr = sig['signal'].to_numpy(dtype=float)
+            pc  = sig['position_change'].to_numpy(dtype=float)
+            if min(int(np.sum(pc > 0)), int(np.sum(pc < 0))) < 1:
+                return float('nan')
+            strat = dr[1:] * arr[:-1]   # signal[t-1] * return[t]  — 1-day lag
+            s = compute_sortino(strat)
+            scores.append(s if s == s else float('nan'))
+        except Exception:
+            scores.append(float('nan'))
+    valid = [s for s in scores if s == s]
+    return float(np.mean(valid)) if valid else float('nan')
+
 
 ### PARAMETER GRID SEARCH
 # Literature:
@@ -624,3 +656,31 @@ def stochastic_signal(series, k_window=14, d_window=3, oversold=20, overbought=8
     signals_df['pct_d']           = pct_d
     signals_df['position_change'] = pos_change
     return signals_df
+
+
+### VISUALISATION HELPER
+
+def draw_heatmap(ax, data, row_labels, col_labels, row_title, col_title,
+                 title, star_row, star_col, colorbar_label='Sortino'):
+    # Colour-coded heatmap with annotated cell values; ★ marks the chosen parameter.
+    # colorbar_label: override the default 'Sortino' label on the colour bar.
+    vmin = float(np.nanmin(data)) if not np.all(np.isnan(data)) else -1
+    vmax = float(np.nanmax(data)) if not np.all(np.isnan(data)) else  1
+    im = ax.imshow(data, aspect='auto', cmap='RdYlGn', vmin=vmin, vmax=vmax)
+    ax.set_xticks(range(len(col_labels)))
+    ax.set_xticklabels(col_labels, fontsize=8)
+    ax.set_yticks(range(len(row_labels)))
+    ax.set_yticklabels(row_labels, fontsize=8)
+    ax.set_xlabel(col_title, fontsize=9)
+    ax.set_ylabel(row_title, fontsize=9)
+    ax.set_title(title, fontsize=10, fontweight='bold')
+    mid = (vmin + vmax) / 2
+    for r in range(data.shape[0]):
+        for c in range(data.shape[1]):
+            if not np.isnan(data[r, c]):
+                marker = ' ★' if (r == star_row and c == star_col) else ''
+                tc = 'black' if data[r, c] > mid else 'white'
+                ax.text(c, r, f'{data[r,c]:.2f}{marker}',
+                        ha='center', va='center', fontsize=7, color=tc,
+                        fontweight='bold' if marker else 'normal')
+    plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label=colorbar_label)
