@@ -585,13 +585,8 @@ def zscore_signal(series, window=20, entry_threshold=2.0, exit_threshold=0.0):
     return signals_df
 
 
-def donchian_signal(series, window=55, entry_window=None, exit_window=None):
-    # Donchian Channel Breakout: buy on new N-day high, exit on M-day low.
-    if entry_window is None:
-        entry_window = window
-    if exit_window is None:
-        exit_window = window
-
+def donchian_signal(series, entry_window=55, exit_window=20):
+    # Donchian Channel Breakout: buy on new entry_window-day high, exit on exit_window-day low.
     prices = np.asarray(series, dtype=float)
     n      = len(prices)
 
