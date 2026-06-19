@@ -674,14 +674,12 @@ def draw_heatmap(ax, data, row_labels, col_labels, row_title, col_title,
     ax.set_xlabel(col_title, fontsize=9)
     ax.set_ylabel(row_title, fontsize=9)
     ax.set_title(title, fontsize=10, fontweight='bold')
-    mid = (vmin + vmax) / 2
     for r in range(data.shape[0]):
         for c in range(data.shape[1]):
             if not np.isnan(data[r, c]):
                 marker = ' ★' if (r == star_row and c == star_col) else ''
-                tc = 'black' if data[r, c] > mid else 'white'
                 ax.text(c, r, f'{data[r,c]:.2f}{marker}',
-                        ha='center', va='center', fontsize=7, color=tc,
+                        ha='center', va='center', fontsize=7, color='black',
                         fontweight='bold' if marker else 'normal')
     plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label=colorbar_label)
 
