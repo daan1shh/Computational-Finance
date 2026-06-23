@@ -20,13 +20,13 @@ All section headers were renumbered to start from **2** (the original started at
 
 | Original | Updated |
 |----------|---------|
-| §3 Signal Catalogue | §2 Signal Catalogue |
-| §4 ETF Assignment | §3 ETF Assignment |
-| §5 In-Sample Parameter Optimisation | §4 In-Sample Parameter Optimisation |
-| §6 OOS Validation | §5 Out-Of-Sample Validation |
-| (subsection) Net Cumulative Return Curves | §6 Net Cumulative Return Curves |
-| (subsection) Drawdown Curves | §7 Drawdown Curves |
-| §9 Conclusion | §8 Conclusion & Final Parameter Justification |
+| §3 Signal Catalogue | 2. Signal Catalogue |
+| §4 ETF Assignment | 3. ETF Assignment |
+| §5 In-Sample Parameter Optimisation | 4. In-Sample Parameter Optimisation |
+| §6 OOS Validation | 5. Out-Of-Sample Validation |
+| (subsection) Net Cumulative Return Curves | 6. Net Cumulative Return Curves |
+| (subsection) Drawdown Curves | 7. Drawdown Curves |
+| §9 Conclusion | 8. Conclusion & Final Parameter Justification |
 
 ---
 
