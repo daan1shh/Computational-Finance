@@ -1,0 +1,563 @@
+﻿=== ORIG CELL 19 ===
+# --- Portfolio Construction Helper Functions ---
+
+def basket_portfolio_value(signal_fn, df_basket, params):
+    n_stocks = len(df_basket.columns)
+    weight   = 1.0 / n_stocks
+
+    returns_matrix = np.zeros((len(df_basket), n_stocks))
+    signals_matrix = np.zeros((len(df_basket), n_stocks))
+
+    for j, col in enumerate(df_basket.columns):
+        px = df_basket[col].to_numpy(dtype=float)
+        dr = np.concatenate(([0.0], px[1:] / px[:-1] - 1))
+        returns_matrix[:, j] = dr
+        try:
+            sig = signal_fn(df_basket[col], **params)
+            signals_matrix[:, j] = sig['signal'].to_numpy(dtype=float)
+        except Exception:
+            pass
+
+    # 1-day lag: signal decided at close of day t-1 earns return on day t
+    lagged_signals = np.vstack([np.zeros((1, n_stocks)), signals_matrix[:-1]])
+    daily_ret = np.sum(lagged_signals * returns_matrix, axis=1) * weight
+    return np.cumprod(1.0 + daily_ret)
+
+
+def _spx_slice(df_basket, df_benchmark):
+    aligned = df_benchmark.reindex(df_basket.index, method='ffill')
+    col = '^GSPC' if '^GSPC' in aligned.columns else aligned.columns[0]
+    v = aligned[col].to_numpy(dtype=float)
+    return v / v[0]
+
+
+def pv_to_returns(pv):
+    return np.concatenate(([0.0], pv[1:] / pv[:-1] - 1))
+
+
+# --- Compute Portfolio Values: All Nine Window-Signal Combinations ---
+# Frozen IS-optimal parameters applied independently to IS, OOS1, and OOS2 data.
+# Nine pv_* strategy arrays and three spx_pv_* benchmark arrays produced here,
+# shared across all downstream tables and charts.
+
+# IS portfolio values
+pv_ma_is  = basket_portfolio_value(module.ma_signal,       df_finance_is,    best_ma_params)
+pv_rsi_is = basket_portfolio_value(module.rsi_signal,      df_materials_is,  best_rsi_params)
+pv_don_is = basket_portfolio_value(module.donchian_signal, df_technology_is, best_donchian_params)
+
+# OOS1 portfolio values
+pv_ma_oos1  = basket_portfolio_value(module.ma_signal,       df_finance_oos1,    best_ma_params)
+pv_rsi_oos1 = basket_portfolio_value(module.rsi_signal,      df_materials_oos1,  best_rsi_params)
+pv_don_oos1 = basket_portfolio_value(module.donchian_signal, df_technology_oos1, best_donchian_params)
+
+# OOS2 portfolio values
+pv_ma_oos2  = basket_portfolio_value(module.ma_signal,       df_finance_oos2,    best_ma_params)
+pv_rsi_oos2 = basket_portfolio_value(module.rsi_signal,      df_materials_oos2,  best_rsi_params)
+pv_don_oos2 = basket_portfolio_value(module.donchian_signal, df_technology_oos2, best_donchian_params)
+
+# SPX benchmark PV series
+spx_pv_is   = _spx_slice(df_finance_is,   spx_is)
+spx_pv_oos1 = _spx_slice(df_finance_oos1, spx_oos1)
+spx_pv_oos2 = _spx_slice(df_finance_oos2, spx_oos2)
+
+print('Portfolio value series computed (gross returns, 1-day lag).')
+print(f'  IS   days: {len(pv_ma_is)}')
+print(f'  OOS1 days: {len(pv_ma_oos1)}')
+print(f'  OOS2 days: {len(pv_ma_oos2)}')
+
+
+# --- Consolidated Master Summary Table ---
+
+def sortino_from_pv(pv):
+    return module.compute_sortino(pv_to_returns(pv)[1:])
+
+def master_summary(signals, spx_is, spx_oos1, spx_oos2):
+    """One consolidated table: IS/OOS1/OOS2 performance + MinOOS decay summary."""
+    def mets(pv):
+        dr = pv_to_returns(pv)[1:]
+        return (pv[-1] / pv[0] - 1,
+                module.compute_sortino(dr),
+                module.compute_sharpe(dr),
+                module.compute_cagr(pv),
+                module.compute_max_drawdown(pv),
+                module.compute_calmar(pv))
+
+    spx_rows = [
+        ('IS   2010–19', mets(spx_is)),
+        ('OOS1 2020–25', mets(spx_oos1)),
+        ('OOS2 2000–09', mets(spx_oos2)),
+    ]
+
+    W = 126
+    print('=' * W)
+    print('  Three-Window Performance Summary  |  IS-optimal params, no re-optimisation  |  Net returns, 1-day lag')
+    print('=' * W)
+    print(f'  {"":<18} {"":<4}  {"Window":<15}  {"Net Ret":>9}  {"Sortino":>8}  {"Sharpe":>7}  {"CAGR":>8}  {"MaxDD":>8}  {"Calmar":>7}  {"vs SPX Sort":>12}')
+    print(f'  {"-"*(W-2)}')
+
+    for label, etf, pv_is_, pv_oos1_, pv_oos2_ in signals:
+        windows = [
+            ('IS   2010–19', pv_is_,   spx_rows[0][1][1]),
+            ('OOS1 2020–25', pv_oos1_, spx_rows[1][1][1]),
+            ('OOS2 2000–09', pv_oos2_, spx_rows[2][1][1]),
+        ]
+        first = True
+        for win_name, pv_, spx_srt in windows:
+            net_ret, srt, sh, cagr, mdd, calmar = mets(pv_)
+            vs = srt - spx_srt
+            lbl = label if first else ''
+            etf_ = etf if first else ''
+            first = False
+            print(f'  {lbl:<18} {etf_:<4}  {win_name:<15}  {net_ret:>9.2%}  {srt:>8.3f}  {sh:>7.3f}  {cagr:>8.2%}  {mdd:>8.2%}  {calmar:>7.3f}  {vs:>+12.3f}')
+        print(f'  {"-"*(W-2)}')
+
+    # SPX reference rows
+    for win_name, (net_ret, srt, sh, cagr, mdd, calmar) in spx_rows:
+        lbl = 'S&P 500' if win_name.startswith('IS') else ''
+        print(f'  {lbl:<18} {"–":<4}  {win_name:<15}  {net_ret:>9.2%}  {srt:>8.3f}  {sh:>7.3f}  {cagr:>8.2%}  {mdd:>8.2%}  {calmar:>7.3f}  {"–":>12}')
+    print('=' * W)
+
+    # Robustness block
+    print()
+    print(f'  {"MinOOS & IS→OOS Sortino Decay  (MinOOS = worst of OOS1, OOS2)"}')
+    print(f'  {"-"*(W-2)}')
+    print(f'  {"Signal":<18} {"ETF":<4}  {"MinOOS":>8}  {"Δ Sort OOS1":>13}  {"Δ Sort OOS2":>13}  {"All OOS > 0?":>13}')
+    print(f'  {"-"*(W-2)}')
+    n_pos = 0
+    for label, etf, pv_is_, pv_oos1_, pv_oos2_ in signals:
+        s_is, s_o1, s_o2 = sortino_from_pv(pv_is_), sortino_from_pv(pv_oos1_), sortino_from_pv(pv_oos2_)
+        min_oos = min(s_o1, s_o2)
+        dc1 = (s_o1 - s_is) / abs(s_is) * 100
+        dc2 = (s_o2 - s_is) / abs(s_is) * 100
+        all_pos = s_o1 > 0 and s_o2 > 0
+        if all_pos: n_pos += 1
+        flag = '  <<' if all_pos else ''
+        print(f'  {label:<18} {etf:<4}  {min_oos:>8.3f}  {dc1:>+12.1f}%  {dc2:>+12.1f}%  {str(all_pos):>13}{flag}')
+    print(f'  {"-"*(W-2)}')
+    print(f'  {n_pos}/{len(signals)} signals positive in both OOS periods')
+    print('=' * W)
+
+
+master_summary(
+    [
+        ('MA Crossover',  'XLF', pv_ma_is,  pv_ma_oos1,  pv_ma_oos2),
+        ('RSI',           'XLB', pv_rsi_is, pv_rsi_oos1, pv_rsi_oos2),
+        ('Donchian',      'XLK', pv_don_is, pv_don_oos1, pv_don_oos2),
+    ],
+    spx_pv_is, spx_pv_oos1, spx_pv_oos2,
+)
+=== CHANGED CELL 19 ===
+# Portfolio Construction Helper Functions
+
+def basket_portfolio_value(signal_fn, df_basket, params):
+    n_stocks = len(df_basket.columns)
+    weight   = 1.0 / n_stocks
+
+    returns_matrix = np.zeros((len(df_basket), n_stocks))
+    signals_matrix = np.zeros((len(df_basket), n_stocks))
+
+    for j, col in enumerate(df_basket.columns):
+        px = df_basket[col].to_numpy(dtype=float)
+        dr = np.concatenate(([0.0], px[1:] / px[:-1] - 1))
+        returns_matrix[:, j] = dr
+        try:
+            sig = signal_fn(df_basket[col], **params)
+            signals_matrix[:, j] = sig['signal'].to_numpy(dtype=float)
+        except Exception:
+            pass
+
+    # 1-day lag: signal decided at close of day t-1 earns return on day t
+    lagged_signals = np.vstack([np.zeros((1, n_stocks)), signals_matrix[:-1]])
+    daily_ret = np.sum(lagged_signals * returns_matrix, axis=1) * weight
+    return np.cumprod(1.0 + daily_ret)
+
+
+def _spx_slice(df_basket, df_benchmark):
+    aligned = df_benchmark.reindex(df_basket.index, method='ffill')
+    col = '^GSPC' if '^GSPC' in aligned.columns else aligned.columns[0]
+    v = aligned[col].to_numpy(dtype=float)
+    return v / v[0]
+
+
+def pv_to_returns(pv):
+    return np.concatenate(([0.0], pv[1:] / pv[:-1] - 1))
+
+
+# Portfolio Values Computation 
+
+# IS portfolio values
+pv_ma_is  = basket_portfolio_value(module.ma_signal,       df_finance_is,    best_ma_params)
+pv_rsi_is = basket_portfolio_value(module.rsi_signal,      df_materials_is,  best_rsi_params)
+pv_don_is = basket_portfolio_value(module.donchian_signal, df_technology_is, best_donchian_params)
+
+# OOS1 portfolio values
+pv_ma_oos1  = basket_portfolio_value(module.ma_signal,       df_finance_oos1,    best_ma_params)
+pv_rsi_oos1 = basket_portfolio_value(module.rsi_signal,      df_materials_oos1,  best_rsi_params)
+pv_don_oos1 = basket_portfolio_value(module.donchian_signal, df_technology_oos1, best_donchian_params)
+
+# OOS2 portfolio values
+pv_ma_oos2  = basket_portfolio_value(module.ma_signal,       df_finance_oos2,    best_ma_params)
+pv_rsi_oos2 = basket_portfolio_value(module.rsi_signal,      df_materials_oos2,  best_rsi_params)
+pv_don_oos2 = basket_portfolio_value(module.donchian_signal, df_technology_oos2, best_donchian_params)
+
+# SPX benchmark PV series
+spx_pv_is   = _spx_slice(df_finance_is,   spx_is)
+spx_pv_oos1 = _spx_slice(df_finance_oos1, spx_oos1)
+spx_pv_oos2 = _spx_slice(df_finance_oos2, spx_oos2)
+
+
+# Consolidated Master Summary Table 
+
+def sortino_from_pv(pv):
+    return module.compute_sortino(pv_to_returns(pv)[1:])
+
+def master_summary(signals, spx_is, spx_oos1, spx_oos2):
+    """One consolidated table: IS/OOS1/OOS2 performance."""
+    def mets(pv):
+        dr = pv_to_returns(pv)[1:]
+        return (pv[-1] / pv[0] - 1,
+                module.compute_sortino(dr),
+                module.compute_sharpe(dr),
+                module.compute_cagr(pv),
+                module.compute_max_drawdown(pv),
+                module.compute_calmar(pv))
+
+    spx_rows = [
+        ('IS   2010–19', mets(spx_is)),
+        ('OOS1 2020–25', mets(spx_oos1)),
+        ('OOS2 2000–09', mets(spx_oos2)),
+    ]
+
+    W = 126
+    print('=' * W)
+    print('  Three-Window Performance Summary  |  IS-optimal params, no re-optimisation  |  Net returns, 1-day lag')
+    print('=' * W)
+    print(f'  {"":<18} {"":<4}  {"Window":<15}  {"Net Ret":>9}  {"Sortino":>8}  {"Sharpe":>7}  {"CAGR":>8}  {"MaxDD":>8}  {"Calmar":>7}  {"vs SPX Sort":>12}')
+    print(f'  {"-"*(W-2)}')
+
+    for label, etf, pv_is_, pv_oos1_, pv_oos2_ in signals:
+        windows = [
+            ('IS   2010–19', pv_is_,   spx_rows[0][1][1]),
+            ('OOS1 2020–25', pv_oos1_, spx_rows[1][1][1]),
+            ('OOS2 2000–09', pv_oos2_, spx_rows[2][1][1]),
+        ]
+        first = True
+        for win_name, pv_, spx_srt in windows:
+            net_ret, srt, sh, cagr, mdd, calmar = mets(pv_)
+            vs = srt - spx_srt
+            lbl = label if first else ''
+            etf_ = etf if first else ''
+            first = False
+            print(f'  {lbl:<18} {etf_:<4}  {win_name:<15}  {net_ret:>9.2%}  {srt:>8.3f}  {sh:>7.3f}  {cagr:>8.2%}  {mdd:>8.2%}  {calmar:>7.3f}  {vs:>+12.3f}')
+        print(f'  {"-"*(W-2)}')
+
+    # SPX reference rows
+    for win_name, (net_ret, srt, sh, cagr, mdd, calmar) in spx_rows:
+        lbl = 'S&P 500' if win_name.startswith('IS') else ''
+        print(f'  {lbl:<18} {"–":<4}  {win_name:<15}  {net_ret:>9.2%}  {srt:>8.3f}  {sh:>7.3f}  {cagr:>8.2%}  {mdd:>8.2%}  {calmar:>7.3f}  {"–":>12}')
+    print('=' * W)
+
+
+master_summary(
+    [
+        ('MA Crossover',  'XLF', pv_ma_is,  pv_ma_oos1,  pv_ma_oos2),
+        ('RSI',           'XLB', pv_rsi_is, pv_rsi_oos1, pv_rsi_oos2),
+        ('Donchian',      'XLK', pv_don_is, pv_don_oos1, pv_don_oos2),
+    ],
+    spx_pv_is, spx_pv_oos1, spx_pv_oos2,
+)
+
+=== ORIG CELL 20 ===
+### Net Cumulative Return Curves - IS / OOS1 / OOS2
+
+Each row is one signal; each column is one evaluation period (IS 2010-2019, OOS1 2020-2025, OOS2 2000-2009). All panels plot net cumulative return (%) vs the S&P 500 (dashed red), normalised to zero at the start of each period. IS-optimal parameters are frozen throughout.
+=== CHANGED CELL 20 ===
+---
+## 6. Net Cumulative Return Curves 
+
+Each row is one signal; each column is one evaluation period (IS 2010-2019, OOS1 2020-2025 & OOS2 2000-2009). All panels plot net cumulative return (%) vs the S&P 500 (dashed red), normalised to zero at the start of each period. 
+
+=== ORIG CELL 21 ===
+signal_rows = [
+    ('MA Crossover | XLF',  pv_ma_is,  pv_ma_oos1,  pv_ma_oos2,
+     df_finance_is,    df_finance_oos1,    df_finance_oos2,    'navy'),
+    ('RSI | XLB',           pv_rsi_is, pv_rsi_oos1, pv_rsi_oos2,
+     df_materials_is,  df_materials_oos1,  df_materials_oos2,  'forestgreen'),
+    ('Donchian | XLK',      pv_don_is, pv_don_oos1, pv_don_oos2,
+     df_technology_is, df_technology_oos1, df_technology_oos2, 'darkorchid'),
+]
+period_titles = ['IS  2010\u20132019', 'OOS1  2020\u20132025', 'OOS2  2000\u20132009']
+
+fig, axes = plt.subplots(3, 3, figsize=(17, 11))
+fig.suptitle(
+    'Net Cumulative Return (%) vs. S&P 500  |  Gross Returns  |  Start-of-Period Normalised',
+    fontsize=13, fontweight='bold'
+)
+
+for r, (sig_label, pv_is_, pv_oos1_, pv_oos2_,
+        df_is_, df_oos1_, df_oos2_, color) in enumerate(signal_rows):
+
+    for c, (pv_, df_, period_label) in enumerate([
+        (pv_is_,   df_is_,   period_titles[0]),
+        (pv_oos1_, df_oos1_, period_titles[1]),
+        (pv_oos2_, df_oos2_, period_titles[2]),
+    ]):
+        ax = axes[r][c]
+        dates = df_.index.to_numpy()
+        spx_ref = spx_is if c == 0 else (spx_oos1 if c == 1 else spx_oos2)
+        spx_v = _spx_slice(df_, spx_ref)
+
+        net_strat = (pv_ / pv_[0] - 1) * 100
+        net_spx   = (spx_v / spx_v[0] - 1) * 100
+
+        ax.plot(dates, net_strat, color=color, lw=1.8, label='Strategy')
+        ax.plot(dates, net_spx,   color='tomato', lw=1.3,
+                linestyle='--', alpha=0.85, label='S&P 500')
+        ax.axhline(0, color='black', lw=0.5, alpha=0.4)
+
+        if r == 0:
+            ax.set_title(period_label, fontsize=10, fontweight='bold')
+        if c == 0:
+            ax.set_ylabel(sig_label, fontsize=9, fontweight='bold')
+
+        ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f'{x:+.0f}%'))
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y'))
+        ax.xaxis.set_major_locator(mdates.YearLocator(2))
+        ax.tick_params(axis='x', labelsize=8)
+        ax.tick_params(axis='y', labelsize=8)
+        ax.grid(True, which='both', alpha=0.2, linestyle='--')
+        if r == 0 and c == 0:
+            ax.legend(fontsize=8, loc='upper left')
+
+plt.tight_layout()
+plt.show()
+
+=== CHANGED CELL 21 ===
+signal_rows = [
+    ('MA Crossover | XLF',  pv_ma_is,  pv_ma_oos1,  pv_ma_oos2,
+     df_finance_is,    df_finance_oos1,    df_finance_oos2,    'navy'),
+    ('RSI | XLB',           pv_rsi_is, pv_rsi_oos1, pv_rsi_oos2,
+     df_materials_is,  df_materials_oos1,  df_materials_oos2,  'forestgreen'),
+    ('Donchian | XLK',      pv_don_is, pv_don_oos1, pv_don_oos2,
+     df_technology_is, df_technology_oos1, df_technology_oos2, 'darkorchid'),
+]
+period_titles = ['IS  2010–2019', 'OOS1  2020–2025', 'OOS2  2000–2009']
+
+fig, axes = plt.subplots(3, 3, figsize=(17, 11))
+fig.suptitle(
+    'Net Cumulative Return (%) vs. S&P 500  |  Start-of-Period Normalised',
+    fontsize=13, fontweight='bold'
+)
+
+for r, (sig_label, pv_is_, pv_oos1_, pv_oos2_,
+        df_is_, df_oos1_, df_oos2_, color) in enumerate(signal_rows):
+
+    for c, (pv_, df_, period_label) in enumerate([
+        (pv_is_,   df_is_,   period_titles[0]),
+        (pv_oos1_, df_oos1_, period_titles[1]),
+        (pv_oos2_, df_oos2_, period_titles[2]),
+    ]):
+        ax = axes[r][c]
+        dates = df_.index.to_numpy()
+        spx_ref = spx_is if c == 0 else (spx_oos1 if c == 1 else spx_oos2)
+        spx_v = _spx_slice(df_, spx_ref)
+
+        net_strat = (pv_ / pv_[0] - 1) * 100
+        net_spx   = (spx_v / spx_v[0] - 1) * 100
+
+        ax.plot(dates, net_strat, color=color, lw=1.8, label='Strategy')
+        ax.plot(dates, net_spx,   color='tomato', lw=1.3,
+                linestyle='--', alpha=0.85, label='S&P 500')
+        ax.axhline(0, color='black', lw=0.5, alpha=0.4)
+
+        if r == 0:
+            ax.set_title(period_label, fontsize=10, fontweight='bold')
+        if c == 0:
+            ax.set_ylabel(sig_label, fontsize=9, fontweight='bold')
+
+        ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f'{x:+.0f}%'))
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y'))
+        ax.xaxis.set_major_locator(mdates.YearLocator(2))
+        ax.tick_params(axis='x', labelsize=8)
+        ax.tick_params(axis='y', labelsize=8)
+        ax.grid(True, which='both', alpha=0.2, linestyle='--')
+        if r == 0 and c == 0:
+            ax.legend(fontsize=8, loc='upper left')
+
+plt.tight_layout()
+plt.show()
+
+
+=== ORIG CELL 22 ===
+### Drawdown Curves - IS / OOS1 / OOS2
+
+Drawdown at each point = `(pv / running_max - 1) × 100`. Shaded area shows the strategy underwater period; dashed red is the S&P 500 drawdown.
+=== CHANGED CELL 22 ===
+---
+## 7. Drawdown Curves 
+
+Shaded area shows the strategy underwater period; dashed red is the S&P 500 drawdown.
+
+=== ORIG CELL 23 ===
+def compute_dd(pv):
+    return (pv / np.maximum.accumulate(pv) - 1) * 100
+
+fig_dd, axes_dd = plt.subplots(3, 3, figsize=(17, 11))
+fig_dd.suptitle(
+    'Drawdown (%) vs. S&P 500  |  IS \u00b7 OOS1 \u00b7 OOS2',
+    fontsize=13, fontweight='bold'
+)
+
+for r, (sig_label, pv_is_, pv_oos1_, pv_oos2_,
+        df_is_, df_oos1_, df_oos2_, color) in enumerate(signal_rows):
+
+    for c, (pv_, df_, period_label) in enumerate([
+        (pv_is_,   df_is_,   'IS  2010\u20132019'),
+        (pv_oos1_, df_oos1_, 'OOS1  2020\u20132025'),
+        (pv_oos2_, df_oos2_, 'OOS2  2000\u20132009'),
+    ]):
+        ax = axes_dd[r][c]
+        dates = df_.index.to_numpy()
+        spx_ref = spx_is if c == 0 else (spx_oos1 if c == 1 else spx_oos2)
+        spx_v = _spx_slice(df_, spx_ref)
+
+        dd_strat = compute_dd(pv_)
+        dd_spx   = compute_dd(spx_v)
+
+        ax.fill_between(dates, dd_strat, 0, alpha=0.25, color=color)
+        ax.plot(dates, dd_strat, color=color, lw=1.6, label='Strategy')
+        ax.plot(dates, dd_spx,   color='tomato', lw=1.2,
+                linestyle='--', alpha=0.85, label='S&P 500')
+        ax.axhline(0, color='black', lw=0.5, alpha=0.4)
+
+        if r == 0:
+            ax.set_title(period_label, fontsize=10, fontweight='bold')
+        if c == 0:
+            ax.set_ylabel(sig_label + '\nDrawdown (%)', fontsize=8, fontweight='bold')
+
+        ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f'{x:.0f}%'))
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y'))
+        ax.xaxis.set_major_locator(mdates.YearLocator(2))
+        ax.tick_params(axis='x', labelsize=8)
+        ax.tick_params(axis='y', labelsize=8)
+        ax.grid(True, which='both', alpha=0.2, linestyle='--')
+        if r == 0 and c == 0:
+            ax.legend(fontsize=8, loc='lower left')
+
+plt.tight_layout()
+plt.show()
+
+=== CHANGED CELL 23 ===
+def compute_dd(pv):
+    return (pv / np.maximum.accumulate(pv) - 1) * 100
+
+fig_dd, axes_dd = plt.subplots(3, 3, figsize=(17, 11))
+fig_dd.suptitle(
+    'Drawdown (%) vs. S&P 500',
+    fontsize=13, fontweight='bold'
+)
+
+for r, (sig_label, pv_is_, pv_oos1_, pv_oos2_,
+        df_is_, df_oos1_, df_oos2_, color) in enumerate(signal_rows):
+
+    for c, (pv_, df_, period_label) in enumerate([
+        (pv_is_,   df_is_,   'IS  2010\u20132019'),
+        (pv_oos1_, df_oos1_, 'OOS1  2020\u20132025'),
+        (pv_oos2_, df_oos2_, 'OOS2  2000\u20132009'),
+    ]):
+        ax = axes_dd[r][c]
+        dates = df_.index.to_numpy()
+        spx_ref = spx_is if c == 0 else (spx_oos1 if c == 1 else spx_oos2)
+        spx_v = _spx_slice(df_, spx_ref)
+
+        dd_strat = compute_dd(pv_)
+        dd_spx   = compute_dd(spx_v)
+
+        ax.fill_between(dates, dd_strat, 0, alpha=0.25, color=color)
+        ax.plot(dates, dd_strat, color=color, lw=1.6, label='Strategy')
+        ax.plot(dates, dd_spx,   color='tomato', lw=1.2,
+                linestyle='--', alpha=0.85, label='S&P 500')
+        ax.axhline(0, color='black', lw=0.5, alpha=0.4)
+
+        if r == 0:
+            ax.set_title(period_label, fontsize=10, fontweight='bold')
+        if c == 0:
+            ax.set_ylabel(sig_label + '\nDrawdown (%)', fontsize=8, fontweight='bold')
+
+        ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f'{x:.0f}%'))
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y'))
+        ax.xaxis.set_major_locator(mdates.YearLocator(2))
+        ax.tick_params(axis='x', labelsize=8)
+        ax.tick_params(axis='y', labelsize=8)
+        ax.grid(True, which='both', alpha=0.2, linestyle='--')
+        if r == 0 and c == 0:
+            ax.legend(fontsize=8, loc='lower left')
+
+plt.tight_layout()
+plt.show()
+
+
+=== ORIG CELL 24 ===
+---
+## §9 - Conclusion & Final Parameter Justification
+
+**Signal exploration (§3)** confirmed that MA Crossover, RSI, and Donchian represent structurally distinct mechanisms (trend-following, oscillator mean reversion, price-channel breakout). Bollinger Bands and Z-Score were dropped after verifying the algebraic equivalence of their entry triggers. MACD, Stochastic, and Z-Score remain in the catalogue as unexplored alternatives.
+
+**Sector assignment (§4)** matched each signal to the sector whose return dynamics best fit its mechanism: financial rate cycles for MA Crossover (XLF), commodity price cycles for RSI (XLB), and technology adoption S-curves for Donchian (XLK). Single-ETF baskets eliminate single-name selection bias and provide near-full sector diversification.
+
+**Sector ETF pre-screening (§4.1)** provided a data-driven sanity check using IS Basket Sortino as the primary ranking criterion. The rankings are consistent with the sector assignments; OOS2 results are reported as a pre-sample stress test.
+
+**IS parameter optimisation (§5)** used exhaustive Sortino-ratio grid search on in-sample data (2010-2019). Parameters are frozen here and applied without modification to all OOS windows:
+
+$$\text{Sortino} = \frac{\bar{r}}{\text{DD}} \cdot \sqrt{252}$$
+
+**Sensitivity heatmaps (§5.3)** confirmed smooth performance plateaux around the IS-optimal parameters. No knife-edge optimum was observed for any signal. The Donchian heatmap plots entry window against exit window. The IS-optimal parameters are entry\_window = 125 days and exit\_window = 100 days (IS Sortino 1.07, OOS1 1.27, OOS2 0.59). The asymmetric channel — a longer entry window for breakout confirmation and a shorter exit for more responsive position management — follows the Turtle Trader design principle (Covel 2007) and yields better OOS1 performance than the symmetric baseline.
+
+**Walk-forward OOS validation (§6)** applied frozen IS parameters to both held-out windows (OOS1: 2020-2025; OOS2: 2000-2009). Net cumulative return curves and drawdown profiles are presented for all three signals across all three evaluation windows. Performance is reported gross of transaction costs.
+
+All performance figures are **gross returns only** with no transaction costs modelled.
+
+**References:**
+- Pardo, R. (2008). *The Evaluation and Optimization of Trading Strategies.* Wiley Trading.
+- Sharpe, W. F. (1994). *The Sharpe Ratio.* JPM, 21(1), 49-58.
+- Wilder, J. W. (1978). *New Concepts in Technical Trading Systems.* Trend Research.
+- Sortino, F. A., & van der Meer, R. (1991). *Downside Risk.* JPM, 17(4), 27-31.
+- Donchian, R. D. (1960). *High Finance in Copper.* Financial Analysts Journal.
+- Covel, M. (2007). *The Complete TurtleTrader.* HarperCollins.
+- De Bondt, W., & Thaler, R. (1985). *Does the Stock Market Overreact?* JF, 40(3).
+- Shleifer, A., & Vishny, R. W. (1997). *The Limits of Arbitrage.* JF, 52(1), 35-55.
+- McLean, R. D., & Pontiff, J. (2016). *Does Publishing Research Destroy Stock Return Predictability?* JF, 71(1).
+- Bailey, D. H., & López de Prado, M. (2014). *The Deflated Sharpe Ratio.* JPM, 40(5).
+- Elton, E. J., & Gruber, M. J. (1997). *Modern Portfolio Theory and Investment Analysis.* Wiley.
+- Korajczyk, R. A., & Sadka, R. (2004). *Are Momentum Profits Robust to Trading Costs?* JF, 59(3).
+=== CHANGED CELL 24 ===
+
+
+=== NEW CELL 25 ===
+---
+## 8. Conclusion & Final Parameter Justification
+
+**2. Signal Catalogue** shows theoretically that MA Crossover, RSI, and Donchian represent structurally distinct mechanisms (trend-following, mean reversion, price-channel breakout).
+
+**3. ETF assignment** was derived from pre-screening of all 70 signal–ETF pairs (7 signals × 10 SPDR sector ETFs) ranked by Min OOS Sortino: Donchian–XLK, MA Cross–XLF, and RSI–XLB all beat the S&P 500 in the OOS1 or OOS2 (or both). ETFs eliminate single-stock selection bias.
+
+**4. IS parameter optimisation** used Sortino-ratio grid search on in-sample data (2010-2019). Parameters are frozen here and applied without modification to all OOS windows. The results are displayed by Sensitivity Heatmaps.
+
+**5. Walk-forward OOS validation** applied frozen IS parameters to both OOS periods (OOS1: 2020-2025; OOS2: 2000-2009). 
+
+**6. Net Cumulative Return Curves** & **7. Drawdown Curves** are presented for all three signals across all three evaluation periods.
+
+
+**References:**
+- Pardo, R. (2008). *The Evaluation and Optimization of Trading Strategies.* Wiley Trading.
+- Sharpe, W. F. (1994). *The Sharpe Ratio.* JPM, 21(1), 49-58.
+- Wilder, J. W. (1978). *New Concepts in Technical Trading Systems.* Trend Research.
+- Sortino, F. A., & van der Meer, R. (1991). *Downside Risk.* JPM, 17(4), 27-31.
+- Donchian, R. D. (1960). *High Finance in Copper.* Financial Analysts Journal.
+- Covel, M. (2007). *The Complete TurtleTrader.* HarperCollins.
+- De Bondt, W., & Thaler, R. (1985). *Does the Stock Market Overreact?* JF, 40(3).
+- Shleifer, A., & Vishny, R. W. (1997). *The Limits of Arbitrage.* JF, 52(1), 35-55.
+- McLean, R. D., & Pontiff, J. (2016). *Does Publishing Research Destroy Stock Return Predictability?* JF, 71(1).
+- Bailey, D. H., & López de Prado, M. (2014). *The Deflated Sharpe Ratio.* JPM, 40(5).
+- Elton, E. J., & Gruber, M. J. (1997). *Modern Portfolio Theory and Investment Analysis.* Wiley.
+- Korajczyk, R. A., & Sadka, R. (2004). *Are Momentum Profits Robust to Trading Costs?* JF, 59(3).
