@@ -1,9 +1,3 @@
-## HINTS
-### WRITE REUSABLE CODE
-### USE NAMINGS THAT ARE EASY TO UNDERSTAND
-### WRITE COMMENTS TO PROVIDE EXTRA CONTEXT
-### ONLY USE NUMPY FOR PERFORMING NUMERICAL COMPUTATIONS
-
 ### IMPORTS
 
 import numpy as np
@@ -15,7 +9,6 @@ from yahooquery import Ticker as yq_ticker
 ### DOWNLOAD DATA
 
 def download_stock_price_data(tickers, start_date, end_date):
-    # Download adjusted close prices and compute daily price ratios.
     raw = yq_ticker(tickers).history(start=start_date, end=end_date)
     df_prices = raw['adjclose'].unstack(level=0)
     df_prices = df_prices.dropna()
@@ -27,18 +20,24 @@ def download_stock_price_data(tickers, start_date, end_date):
 
 
 def _compute_price_ratios(prices_arr):
-    # Price ratio at each row: price[t] / price[t-1]. Row 0 set to 1.0.
+    # ratio[t] = price[t] / price[t-1]; row 0 set to 1.
     ratios    = prices_arr / np.insert(prices_arr[:-1, :], 0,
                                         np.ones(prices_arr.shape[1]), axis=0)
     ratios[0] = np.ones(prices_arr.shape[1])
     return ratios
 
 
-### VECTORISED STATE-MACHINE HELPER
+def make_price_changes(df_prices):
+    arr    = df_prices.to_numpy()
+    ratios = np.ones_like(arr)
+    ratios[1:] = arr[1:] / arr[:-1]
+    return pd.DataFrame(ratios, index=df_prices.index, columns=df_prices.columns)
+
+
+### SIGNALS — VECTORISED HELPERS
 
 def _vectorised_signal(entry_mask, exit_mask):
-    # Convert entry/exit boolean masks to a stateful 0/1 signal.
-    # Uses the group-key cumsum trick (O(n) NumPy, no Python loop over days).
+    # cumsum group-key trick: avoids a Python loop for stateful 0/1 signal.
     entry_mask = np.asarray(entry_mask, dtype=bool)
     exit_mask  = np.asarray(exit_mask,  dtype=bool)
 
@@ -52,19 +51,10 @@ def _vectorised_signal(entry_mask, exit_mask):
     )
 
 
-def _count_completed_trades(signal_arr):
-    # Count completed round-trip trades (entry→exit pairs).
-    signal_arr = np.asarray(signal_arr, dtype=float)
-    pos_change = np.concatenate(([0.0], signal_arr[1:] - signal_arr[:-1]))
-    n_entries  = int(np.sum(pos_change > 0))
-    n_exits    = int(np.sum(pos_change < 0))
-    return min(n_entries, n_exits)
-
-
-### HELPER FUNCTIONS USED ACROSS SIGNALS
+### HELPER FUNCTIONS
 
 def moving_average(prices, window_length):
-    # Simple MA via cumsum trick. NaN for the first (window_length-1) entries.
+    # cumsum trick; NaN for the first (window_length-1) entries.
     prices_arr = np.asarray(prices, dtype=float)
     n = len(prices_arr)
     result = np.full(n, np.nan)
@@ -76,7 +66,7 @@ def moving_average(prices, window_length):
 
 
 def rolling_std(prices, window_length):
-    # Rolling std using Var = E[X²] - (E[X])². NaN for first (window_length-1) entries.
+    # Var = E[X²] - (E[X])²; NaN for first (window_length-1) entries.
     prices_arr = np.asarray(prices, dtype=float)
     n = len(prices_arr)
     ma = moving_average(prices_arr, window_length)
@@ -85,16 +75,16 @@ def rolling_std(prices, window_length):
         cumsum_sq[window_length - 1:] - np.concatenate(([0.0], cumsum_sq[:n - window_length]))
     ) / window_length
     result = np.full(n, np.nan)
-    # np.maximum guards against tiny negative values from floating-point rounding
+    # np.maximum guards against floating-point negatives under the sqrt
     result[window_length - 1:] = np.sqrt(np.maximum(mean_sq - ma[window_length - 1:] ** 2, 0.0))
     return result
 
 
 def compute_rsi(prices, period=14):
-    # RSI via Wilder's EMA (alpha = 1/period). Loop is irreducible without numba.
+    # Wilder's EMA (alpha = 1/period); loop is irreducible without numba.
     prices_arr = np.asarray(prices, dtype=float)
     n = len(prices_arr)
-    deltas = np.diff(prices_arr)                        # length n-1
+    deltas = np.diff(prices_arr)
 
     gains  = np.where(deltas > 0,  deltas, 0.0)
     losses = np.where(deltas < 0, -deltas, 0.0)
@@ -102,32 +92,28 @@ def compute_rsi(prices, period=14):
     avg_gain = np.full(n, np.nan)
     avg_loss = np.full(n, np.nan)
 
-    # Seed the first smoothed value with the plain mean over the initial window
+    # seed with plain mean over the first window
     avg_gain[period] = np.mean(gains[:period])
     avg_loss[period] = np.mean(losses[:period])
 
-    # Wilder's smoothing: EMA with alpha = 1/period
     for i in range(period + 1, n):
         avg_gain[i] = (avg_gain[i - 1] * (period - 1) + gains[i - 1]) / period
         avg_loss[i] = (avg_loss[i - 1] * (period - 1) + losses[i - 1]) / period
 
-    # Avoid division by zero when there are no down-days in the window
     rs  = avg_gain / np.where(avg_loss == 0, np.finfo(float).eps, avg_loss)
     rsi = 100.0 - (100.0 / (1.0 + rs))
     return rsi
 
 
-### PERFORMANCE METRICS (NumPy only, used in both notebooks)
+### PERFORMANCE METRICS
 
 def compute_cagr(portfolio_values, trading_days_per_year=252):
-    # Compound Annual Growth Rate
     n_days = len(portfolio_values) - 1
     return (portfolio_values[-1] / portfolio_values[0]) ** (trading_days_per_year / n_days) - 1
 
 
 def compute_sharpe(daily_returns, risk_free_rate=0.0, trading_days_per_year=252, n_min=30):
-    # Annualised Sharpe: (mean excess return / std) * sqrt(252).
-    # Returns NaN for samples shorter than n_min days.
+    # annualised; NaN if fewer than n_min observations.
     if len(daily_returns) < n_min:
         return np.nan
     excess      = daily_returns - risk_free_rate / trading_days_per_year
@@ -139,57 +125,25 @@ def compute_sharpe(daily_returns, risk_free_rate=0.0, trading_days_per_year=252,
 
 
 def compute_max_drawdown(portfolio_values):
-    # Maximum peak-to-trough decline over the full history
     running_max = np.maximum.accumulate(portfolio_values)
     drawdown    = (portfolio_values - running_max) / running_max
-    return np.min(drawdown)          # negative number
+    return np.min(drawdown)
 
 
 def compute_drawdown_series(portfolio_values):
-    # Full drawdown time series (for plotting)
     running_max = np.maximum.accumulate(portfolio_values)
     return (portfolio_values - running_max) / running_max
 
 
-### TRANSACTION COSTS
-# Literature:
-#   Korajczyk, R. A., & Sadka, R. (2004).
-#   "Are Momentum Profits Robust to Trading Costs?"
-#   The Journal of Finance, 59(3), 1039–1082.
-
-def apply_transaction_costs(gross_returns, position_changes, trade_cost=0.001):
-    # Deducts flat per-trade cost from gross daily returns based on absolute position changes.
-    gross_returns    = np.asarray(gross_returns,    dtype=float)
-    position_changes = np.asarray(position_changes, dtype=float)
-    # Cost incurred equals the absolute position change times the flat cost rate
-    cost_drag = np.abs(position_changes) * trade_cost
-    return gross_returns - cost_drag
-
-
-### TURNOVER
-
-def compute_turnover(position_changes, trading_days_per_year=252, capital_fraction=1.0):
-    # Annualised turnover: (1/T) * sum(|Δw|) * capital_fraction * 252.
-    position_changes = np.asarray(position_changes, dtype=float)
-    n                = len(position_changes)
-    daily_turnover   = np.sum(np.abs(position_changes)) / n * capital_fraction
-    return daily_turnover * trading_days_per_year
-
-
 ### SORTINO RATIO
-# Literature:
-#   Sortino, F. A., & van der Meer, R. (1991).
-#   "Downside risk." Journal of Portfolio Management, 17(4), 27–31.
 
 def compute_sortino(daily_returns, target_return=0.0, trading_days_per_year=252, n_min=30):
-    # Sortino ratio: mean(r - MAR) / downside_deviation * sqrt(252).
-    # Downside deviation uses all T periods (Sortino & van der Meer 1991).
-    # Returns NaN for samples shorter than n_min days.
+    # annualised; NaN if fewer than n_min observations.
     if len(daily_returns) < n_min:
         return np.nan
     daily_returns = np.asarray(daily_returns, dtype=float)
     excess        = daily_returns - target_return
-    # Downside residuals: clamp positive excess to zero so they do not inflate DD
+    # clamp positive excess to zero — only downside deviation counts
     downside      = np.where(excess < 0, excess, 0.0)
     downside_dev  = np.sqrt(np.sum(downside ** 2) / len(downside))
     if downside_dev == 0:
@@ -198,12 +152,8 @@ def compute_sortino(daily_returns, target_return=0.0, trading_days_per_year=252,
 
 
 ### CALMAR RATIO
-# Literature:
-#   Young, T. W. (1991).
-#   "Calmar Ratio: A Smoother Tool." Futures Magazine, 20(1).
 
 def compute_calmar(portfolio_values, trading_days_per_year=252):
-    # Calmar ratio: CAGR / |max drawdown|.
     portfolio_values = np.asarray(portfolio_values, dtype=float)
     cagr             = compute_cagr(portfolio_values, trading_days_per_year)
     max_dd           = compute_max_drawdown(portfolio_values)
@@ -215,42 +165,40 @@ def compute_calmar(portfolio_values, trading_days_per_year=252):
 ### ANNUAL VOLATILITY
 
 def compute_annual_volatility(daily_returns, trading_days_per_year=252):
-    # Annualised volatility: std(daily returns) * sqrt(252).
     daily_returns = np.asarray(daily_returns, dtype=float)
     n             = len(daily_returns)
     mean_r        = np.sum(daily_returns) / n
-    # Population standard deviation (consistent with Sharpe computation above)
     variance      = np.sum((daily_returns - mean_r) ** 2) / n
     return np.sqrt(variance) * np.sqrt(trading_days_per_year)
 
 
+### PORTFOLIO VALUE TO RETURNS
+
+def pv_to_returns(portfolio_values):
+    portfolio_values = np.asarray(portfolio_values, dtype=float)
+    return np.concatenate(([0.0], portfolio_values[1:] / portfolio_values[:-1] - 1))
+
+
 ### TRADE EXPECTANCY
-# Literature:
-#   Tharp, V. K. (2008). "Van Tharp's Definitive Guide to Position Sizing."
-#   International Institute of Trading Mastery.
 
 def _collect_trade_returns(position_changes_arr, price_returns_arr, trade_cost=0.001):
-    # Return a list of net log-returns for each completed round-trip trade.
-    # Shared by compute_trade_expectancy and any caller that needs the full distribution
-    # (e.g. to compute cross-ticker pooled mean, median, or win-rate on net returns).
+    # log-returns per completed round-trip; shared by expectancy and win-rate.
     position_changes_arr = np.asarray(position_changes_arr, dtype=float)
     price_returns_arr    = np.asarray(price_returns_arr,    dtype=float)
 
     trade_returns = []
     in_trade      = False
-    log_r         = 0.0      # accumulate log-returns while the position is open
+    log_r         = 0.0
 
     for i in range(len(position_changes_arr)):
         if position_changes_arr[i] > 0 and not in_trade:
             in_trade = True
             log_r    = 0.0
         elif in_trade:
-            # log(P_t / P_{t-1}) = log1p(daily_return); log1p is stable near zero
             r = price_returns_arr[i]
             if not np.isnan(r):
                 log_r += np.log1p(r)
             if position_changes_arr[i] < 0:
-                # expm1(log_r) = P_exit/P_entry - 1; subtract round-trip cost
                 net_return = np.expm1(log_r) - 2.0 * trade_cost
                 trade_returns.append(net_return)
                 in_trade = False
@@ -259,46 +207,32 @@ def _collect_trade_returns(position_changes_arr, price_returns_arr, trade_cost=0
     return trade_returns
 
 
-def compute_trade_expectancy(position_changes_arr, price_returns_arr, trade_cost=0.001):
-    # Mean net return per completed round-trip trade.
-    # Uses log-returns for numerical stability; deducts 2 * trade_cost for the round trip.
-    # Receives daily PRICE RETURNS — not position values (zeroed on exit by close_trades).
-    trade_returns = _collect_trade_returns(position_changes_arr, price_returns_arr, trade_cost)
-    if len(trade_returns) == 0:
-        return np.nan
-    trade_returns_arr = np.asarray(trade_returns, dtype=float)
-    return float(np.sum(trade_returns_arr) / len(trade_returns_arr))
+### MOMENT STATISTICS
 
-
-### SIGNAL DRAG / ASSET ACTIVE DAYS
-
-def compute_active_days_fraction(signal_arr):
-    # Fraction of trading days the strategy holds a long position (signal == 1).
-    signal_arr = np.asarray(signal_arr, dtype=float)
-    return np.sum(signal_arr > 0) / len(signal_arr)
+def numpy_moments(r):
+    r = np.asarray(r, dtype=float)
+    n = len(r)
+    mu  = np.sum(r) / n
+    d   = r - mu
+    std = np.sqrt(np.sum(d ** 2) / n)
+    if std < 1e-10:
+        return 0.0, 3.0
+    skew = float(np.sum(d ** 3) / n / std ** 3)
+    kurt = float(np.sum(d ** 4) / n / std ** 4)
+    return skew, kurt
 
 
 ### DEFLATED SHARPE RATIO
-# Literature:
-#   Bailey, D. H., & López de Prado, M. (2014).
-#   "The Deflated Sharpe Ratio: Correcting for Selection Bias, Backtest Overfitting
-#    and Non-Normality." Journal of Portfolio Management, 40(5), 94–107.
 
 def compute_deflated_sharpe(sharpe, n_trials, n_observations, skewness=0.0, kurtosis=3.0):
-    # Deflated Sharpe Ratio (Bailey & López de Prado 2014).
-    # Corrects observed SR for multiple-testing inflation across n_trials parameter combinations.
-    # Uses A&S polynomial approximations for normal CDF/inverse-CDF (no scipy needed).
-
+    # rational-polynomial normal CDF approximation, no scipy.
     n_obs = max(int(n_observations), 2)
 
-    # --- Step 1: variance of the Sharpe estimator under non-normality ---
     sr_var = (1.0 - skewness * sharpe + (kurtosis - 1.0) / 4.0 * sharpe ** 2) / (n_obs - 1)
-    sr_var = float(np.maximum(sr_var, 1e-12))   # guard against degenerate variance
+    sr_var = float(np.maximum(sr_var, 1e-12))
     sr_std = float(np.sqrt(sr_var))
 
-    # --- Step 2: expected maximum SR under n_trials tests ---
-    # Inverse normal CDF via Abramowitz & Stegun 26.2.17 rational approximation.
-    # Only np.sqrt and np.log are used — no math or scipy.
+    # inverse normal CDF via rational approximation
     def _phi_inv(p):
         p    = float(np.clip(p, 1e-15, 1.0 - 1e-15))
         sign = 1.0 if p >= 0.5 else -1.0
@@ -310,19 +244,16 @@ def compute_deflated_sharpe(sharpe, n_trials, n_observations, skewness=0.0, kurt
         denom = 1.0 + d[0] * t + d[1] * t ** 2 + d[2] * t ** 3
         return sign * (t - numer / denom)
 
-    n     = max(int(n_trials), 1)
-    gamma = 0.5772156649015329             # Euler-Mascheroni constant
-    z1    = _phi_inv(1.0 - 1.0 / n)
-    z2    = _phi_inv(1.0 - 1.0 / (n * np.e))   # np.e replaces math.e
+    n       = max(int(n_trials), 1)
+    gamma   = 0.5772156649015329  # Euler-Mascheroni constant
+    z1      = _phi_inv(1.0 - 1.0 / n)
+    z2      = _phi_inv(1.0 - 1.0 / (n * np.e))
     sr_star = ((1.0 - gamma) * z1 + gamma * z2) * sr_std
 
-    # --- Step 3: DSR via standard normal CDF ---
-    # Abramowitz & Stegun 26.2.16 polynomial approximation, max |error| < 7.5e-8.
-    # Only np.abs, np.exp, np.sqrt, np.pi — no math.erfc, no scipy.
+    # normal CDF via polynomial approximation
     def _phi(x):
         t = 1.0 / (1.0 + 0.2316419 * float(np.abs(x)))
         d = float(np.exp(-0.5 * x * x) / np.sqrt(2.0 * np.pi))
-        # Horner's method for the degree-5 polynomial
         poly = t * (0.319381530 + t * (-0.356563782 + t * (1.781477937
                + t * (-1.821255978 + t * 1.330274429))))
         p = 1.0 - d * poly
@@ -330,14 +261,13 @@ def compute_deflated_sharpe(sharpe, n_trials, n_observations, skewness=0.0, kurt
 
     z   = (sharpe - sr_star) / sr_std
     dsr = _phi(z)
-
     return dsr, sr_star
 
-### BASKET SORTINO — multi-ETF scoring helper
+
+### BASKET SORTINO
 
 def basket_sortino(signal_fn, df_basket, **params):
-    # Mean IS Sortino across all ETFs in basket with 1-day signal lag.
-    # Returns NaN if any ETF produces zero completed round-trip trades.
+    # mean Sortino across basket ETFs with 1-day lag.
     scores = []
     for col in df_basket.columns:
         px  = df_basket[col].to_numpy(dtype=float)
@@ -348,7 +278,7 @@ def basket_sortino(signal_fn, df_basket, **params):
             pc  = sig['position_change'].to_numpy(dtype=float)
             if min(int(np.sum(pc > 0)), int(np.sum(pc < 0))) < 1:
                 return float('nan')
-            strat = dr[1:] * arr[:-1]   # signal[t-1] * return[t]  — 1-day lag
+            strat = dr[1:] * arr[:-1]
             s = compute_sortino(strat)
             scores.append(s if s == s else float('nan'))
         except Exception:
@@ -357,91 +287,22 @@ def basket_sortino(signal_fn, df_basket, **params):
     return float(np.mean(valid)) if valid else float('nan')
 
 
-### PARAMETER GRID SEARCH
-# Literature:
-#   Bailey, D. H., & López de Prado, M. (2014).
-#   "The Deflated Sharpe Ratio: Correcting for Selection Bias, Backtest Overfitting
-#    and Non-Normality." Journal of Portfolio Management, 40(5), 94–107.
+### IS / OOS SPLIT
 
-def grid_search_parameters(signal_fn, price_series, param_grid, metric_fn=None,
-                            minimum_trades=10):
-    # Exhaustive grid search over signal hyperparameters, scored by metric_fn (default: Sortino).
-    # Skips combinations with fewer than minimum_trades completed round-trips.
-    if metric_fn is None:
-        metric_fn = compute_sortino     # downside-risk metric preferred over Sharpe
-
-    prices_arr    = np.asarray(price_series, dtype=float)
-    daily_returns = np.concatenate(([0.0], prices_arr[1:] / prices_arr[:-1] - 1))
-
-    param_names  = list(param_grid.keys())
-    param_values = [param_grid[k] for k in param_names]
-    lengths      = [len(v) for v in param_values]
-    n_combos     = int(np.prod(np.asarray(lengths, dtype=float)))
-
-    results_grid = []
-    best_score   = -np.inf
-    best_params  = None
-
-    for combo_idx in range(n_combos):
-        remaining = combo_idx
-        params    = {}
-        for k in range(len(param_names) - 1, -1, -1):
-            idx                    = remaining % lengths[k]
-            params[param_names[k]] = param_values[k][idx]
-            remaining             //= lengths[k]
-
-        try:
-            sig_df  = signal_fn(price_series, **params)
-            sig_arr = sig_df['signal'].to_numpy()
-
-            n_completed = _count_completed_trades(sig_arr)
-            if n_completed < minimum_trades:
-                score = np.nan
-            else:
-                position = np.concatenate(([0.0], sig_arr[:-1]))
-                strat_r  = (daily_returns * position)[1:]
-                score    = metric_fn(strat_r)
-        except Exception:
-            # Invalid combination (e.g. short_window >= long_window)
-            score = np.nan
-
-        results_grid.append((params.copy(), score))
-
-        if not np.isnan(score) and score > best_score:
-            best_score  = score
-            best_params = params.copy()
-
-    return best_params, best_score, results_grid
-
-
-### IN-SAMPLE / OUT-OF-SAMPLE PARTITIONING
-# Literature:
-#   Pardo, R. (2008). "The Evaluation and Optimization of Trading Strategies."
-#   Wiley Trading. ISBN 978-0470128015.
-
-def split_in_sample_out_of_sample(df, split_date):
-    # Split a time-indexed DataFrame into IS (≤ split_date) and OOS (> split_date).
-    split_ts = pd.Timestamp(split_date)
-    df_is    = df[df.index <= split_ts]
-    df_oos   = df[df.index >  split_ts]
-    return df_is, df_oos
+def slice_period(df, start, end):
+    return df[(df.index >= start) & (df.index <= end)].copy()
 
 
 ### SIGNAL 0 – MOVING AVERAGE CROSSOVER
-# Literature:
-#   Brock, W., Lakonishok, J., & LeBaron, B. (1992).
-#   "Simple Technical Trading Rules and the Stochastic Properties of Stock Returns."
-#   The Journal of Finance, 47(5), 1731–1764.
 
 def ma_signal(series, short_window, long_window):
-    # Buy when short MA > long MA (Golden Cross); sell on the reverse.
+    # Golden Cross entry, death cross exit.
     prices = np.asarray(series, dtype=float)
     n      = len(prices)
 
     short_ma = moving_average(prices, short_window)
     long_ma  = moving_average(prices, long_window)
 
-    # only generate signals after both MAs have warmed up
     valid      = ~np.isnan(short_ma) & ~np.isnan(long_ma)
     raw_signal = np.zeros(n)
     raw_signal[valid] = np.where(short_ma[valid] > long_ma[valid], 1.0, 0.0)
@@ -457,20 +318,15 @@ def ma_signal(series, short_window, long_window):
 
 
 ### SIGNAL 1 – RSI MEAN REVERSION
-# Literature:
-#   Wilder, J. W. (1978).
-#   "New Concepts in Technical Trading Systems."
-#   Trend Research. ISBN 978-0894590276.
 
 def rsi_signal(series, period=14, oversold=30, overbought=70):
-    # Buy when RSI < oversold; sell when RSI > overbought.
     prices = np.asarray(series, dtype=float)
 
     rsi = compute_rsi(prices, period)
 
     valid      = ~np.isnan(rsi)
-    entry_mask = valid & (rsi < oversold)    # oversold → entry signal
-    exit_mask  = valid & (rsi > overbought)  # overbought → exit signal
+    entry_mask = valid & (rsi < oversold)
+    exit_mask  = valid & (rsi > overbought)
 
     signal     = _vectorised_signal(entry_mask, exit_mask)
     pos_change = np.concatenate(([0.0], signal[1:] - signal[:-1]))
@@ -483,13 +339,9 @@ def rsi_signal(series, period=14, oversold=30, overbought=70):
 
 
 ### SIGNAL 2 – BOLLINGER BANDS MEAN REVERSION
-# Literature:
-#   Bollinger, J. (2002).
-#   "Bollinger on Bollinger Bands."
-#   McGraw-Hill. ISBN 978-0071373685.
 
 def bollinger_signal(series, window=20, num_std=2):
-    # Buy when price falls below lower Bollinger Band; sell when it reverts above the mean.
+    # Entry below lower band; exit above middle band.
     prices = np.asarray(series, dtype=float)
 
     ma         = moving_average(prices, window)
@@ -498,8 +350,8 @@ def bollinger_signal(series, window=20, num_std=2):
     lower_band = ma - num_std * std
 
     valid      = ~np.isnan(lower_band)
-    entry_mask = valid & (prices < lower_band)  # price breaks below lower band
-    exit_mask  = valid & (prices > ma)           # price reverts above middle band
+    entry_mask = valid & (prices < lower_band)
+    exit_mask  = valid & (prices > ma)
 
     signal     = _vectorised_signal(entry_mask, exit_mask)
     pos_change = np.concatenate(([0.0], signal[1:] - signal[:-1]))
@@ -514,7 +366,7 @@ def bollinger_signal(series, window=20, num_std=2):
 
 
 def exponential_moving_average(prices, span):
-    # EMA with alpha = 2/(span+1), seeded with SMA of the first span observations.
+    # alpha = 2/(span+1), seeded with SMA of the first span observations.
     prices_arr = np.asarray(prices, dtype=float)
     n     = len(prices_arr)
     alpha = 2.0 / (span + 1)
@@ -528,15 +380,14 @@ def exponential_moving_average(prices, span):
 
 
 def macd_signal(series, fast_span=12, slow_span=26, signal_span=9):
-    # MACD: buy when MACD line crosses above the signal line, sell when it crosses below.
+    # Buy on MACD line crossing above signal line, sell on the reverse.
     prices = np.asarray(series, dtype=float)
 
     ema_fast   = exponential_moving_average(prices, fast_span)
     ema_slow   = exponential_moving_average(prices, slow_span)
     macd_line  = ema_fast - ema_slow
 
-    # signal line is EMA of macd_line — seed from first valid macd value
-    sig_line   = np.full(len(prices), np.nan)
+    sig_line    = np.full(len(prices), np.nan)
     first_valid = slow_span - 1
     if len(prices) > first_valid + signal_span:
         macd_valid = macd_line[first_valid:]
@@ -562,7 +413,6 @@ def macd_signal(series, fast_span=12, slow_span=26, signal_span=9):
 
 
 def zscore_signal(series, window=20, entry_threshold=2.0, exit_threshold=0.0):
-    # Buy when z-score < -entry_threshold (oversold); sell when z-score > exit_threshold.
     prices = np.asarray(series, dtype=float)
 
     ma     = moving_average(prices, window)
@@ -585,20 +435,19 @@ def zscore_signal(series, window=20, entry_threshold=2.0, exit_threshold=0.0):
     return signals_df
 
 
+### SIGNAL 3 – DONCHIAN CHANNEL BREAKOUT
+
 def donchian_signal(series, entry_window=55, exit_window=20):
-    # Donchian Channel Breakout: buy on new entry_window-day high, exit on exit_window-day low.
     prices = np.asarray(series, dtype=float)
     n      = len(prices)
 
     from numpy.lib.stride_tricks import sliding_window_view
 
-    # Entry: price > highest high over last entry_window days (excluding today)
     entry_high = np.full(n, np.nan)
     if n > entry_window:
-        wins = sliding_window_view(prices[:-1], entry_window)   # shape (n-entry_window, entry_window)
+        wins = sliding_window_view(prices[:-1], entry_window)
         entry_high[entry_window:] = np.max(wins, axis=1)
 
-    # Exit: price < lowest low over last exit_window days (excluding today)
     exit_low = np.full(n, np.nan)
     if n > exit_window:
         wins = sliding_window_view(prices[:-1], exit_window)
@@ -620,7 +469,6 @@ def donchian_signal(series, entry_window=55, exit_window=20):
 
 
 def stochastic_signal(series, k_window=14, d_window=3, oversold=20, overbought=80):
-    # Stochastic oscillator: buy when %K < oversold, sell when %K > overbought.
     prices = np.asarray(series, dtype=float)
     n      = len(prices)
 
@@ -653,12 +501,23 @@ def stochastic_signal(series, k_window=14, d_window=3, oversold=20, overbought=8
     return signals_df
 
 
-### VISUALISATION HELPER
+### BUILD HEATMAP MATRIX
+
+def build_matrix(grid_results, row_vals, col_vals, row_key, col_key):
+    mat = np.full((len(row_vals), len(col_vals)), np.nan)
+    for params, score in grid_results:
+        r = row_vals.index(params[row_key]) if params[row_key] in row_vals else -1
+        c = col_vals.index(params[col_key]) if params[col_key] in col_vals else -1
+        if r >= 0 and c >= 0 and score == score:
+            mat[r, c] = score
+    return mat
+
+
+### VISUALISATION
 
 def draw_heatmap(ax, data, row_labels, col_labels, row_title, col_title,
                  title, star_row, star_col, colorbar_label='Sortino'):
-    # Colour-coded heatmap with annotated cell values; ★ marks the chosen parameter.
-    # colorbar_label: override the default 'Sortino' label on the colour bar.
+    # ★ marks the chosen params.
     vmin = float(np.nanmin(data)) if not np.all(np.isnan(data)) else -1
     vmax = float(np.nanmax(data)) if not np.all(np.isnan(data)) else  1
     im = ax.imshow(data, aspect='auto', cmap='RdYlGn', vmin=vmin, vmax=vmax)
@@ -679,17 +538,14 @@ def draw_heatmap(ax, data, row_labels, col_labels, row_title, col_title,
     plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label=colorbar_label)
 
 
-### PORTFOLIO SIMULATION (target-weight, 1-day lag, cash account)
+### PORTFOLIO SIMULATION
 
 def run_portfolio_sim(traded_tickers, df_prices, df_position_changes,
                       df_price_changes, init_cash=1.0):
-    # Target-weight portfolio simulation with 1-day execution lag.
-    # Each new long position receives (portfolio_value / n_tickers) of capital.
-    # Returns a DataFrame with one column per ticker + 'cash'.
+    # equal-weight, 1-day execution lag; returns per-ticker + cash DataFrame.
     traded_tickers = list(traded_tickers)
     n_etfs = len(traded_tickers)
 
-    # Apply 1-day execution lag to position changes
     raw_pc    = df_position_changes.to_numpy()
     lagged_pc = np.vstack([np.zeros((1, raw_pc.shape[1])), raw_pc[:-1]])
     df_pos_exec = pd.DataFrame(lagged_pc,
@@ -739,11 +595,138 @@ def run_portfolio_sim(traded_tickers, df_prices, df_position_changes,
 
 
 def compute_win_rate(position_changes_arr, price_returns_arr):
-    # Fraction of completed round-trip trades with a non-negative gross log-return.
-    # Uses gross returns (no cost deduction) so win/loss reflects pure price movement.
     trade_returns = _collect_trade_returns(
         position_changes_arr, price_returns_arr, trade_cost=0.0)
     if len(trade_returns) == 0:
         return np.nan
     wins = int(np.sum(np.asarray(trade_returns, dtype=float) >= 0))
     return wins / len(trade_returns)
+
+
+### DATA LOADING
+
+def load_etf(tickers_list, csv_name, start, end, data_dir):
+    # Load ETF prices from a local CSV cache; downloads via yahooquery if the file is absent.
+    # Called by research_notebook to source sector ETF and benchmark price histories.
+    import pathlib as _pl
+    csv_path = _pl.Path(data_dir) / csv_name
+    if csv_path.exists():
+        df = pd.read_csv(csv_path, index_col=0, parse_dates=True)
+        df = df[[t for t in tickers_list if t in df.columns]]
+    else:
+        df, _ = download_stock_price_data(tickers_list, start, end)
+        df.to_csv(csv_path)
+        print(f'Downloaded and cached -> {csv_name}.')
+    df.index = pd.to_datetime(df.index)
+    if df.empty or len(df.columns) == 0:
+        raise ValueError(
+            f'load_etf: no columns for {tickers_list} in {csv_name}. '
+            f'File cols: {list(pd.read_csv(_pl.Path(data_dir) / csv_name, index_col=0, nrows=0).columns)}'
+        )
+    return df
+
+
+### PORTFOLIO HELPERS
+
+def basket_portfolio_value(signal_fn, df_basket, params):
+    # Equal-weight basket backtest with a 1-day execution lag (signal at t-1 earns return at t).
+    # Called by research_notebook to produce cumulative portfolio values for IS/OOS comparison.
+    n_stocks = len(df_basket.columns)
+    weight   = 1.0 / n_stocks
+    returns_matrix = np.zeros((len(df_basket), n_stocks))
+    signals_matrix = np.zeros((len(df_basket), n_stocks))
+    for j, col in enumerate(df_basket.columns):
+        px = df_basket[col].to_numpy(dtype=float)
+        dr = np.concatenate(([0.0], px[1:] / px[:-1] - 1))
+        returns_matrix[:, j] = dr
+        try:
+            sig = signal_fn(df_basket[col], **params)
+            signals_matrix[:, j] = sig['signal'].to_numpy(dtype=float)
+        except Exception:
+            pass
+    lagged_signals = np.vstack([np.zeros((1, n_stocks)), signals_matrix[:-1]])
+    daily_ret = np.sum(lagged_signals * returns_matrix, axis=1) * weight
+    return np.cumprod(1.0 + daily_ret)
+
+
+def spx_normalise(df_basket, df_benchmark):
+    # Align the benchmark DataFrame to the basket index (forward-fill) and normalise to 1.0.
+    # Used in research_notebook to produce a comparable S&P 500 series for overlay plots.
+    aligned = df_benchmark.reindex(df_basket.index, method='ffill')
+    col = '^GSPC' if '^GSPC' in aligned.columns else aligned.columns[0]
+    v = aligned[col].to_numpy(dtype=float)
+    return v / v[0]
+
+
+def sortino_from_pv(pv):
+    # Annualised Sortino ratio directly from a cumulative portfolio-value array.
+    # Convenience wrapper used in research_notebook summary tables.
+    return compute_sortino(pv_to_returns(pv)[1:])
+
+
+def compute_dd(pv):
+    # Drawdown series as a percentage (e.g. -15.0 means 15 % below the running peak).
+    # Used in research_notebook drawdown plots to show strategy vs. S&P 500 underwater curves.
+    return compute_drawdown_series(pv) * 100
+
+
+def run_portfolio(df_p, df_pc, df_pos_changes, init_cash=1.0):
+    # Convenience wrapper around run_portfolio_sim; returns the position DataFrame only.
+    # Called by assessment_notebook's period_stats to avoid repeating the full keyword-argument list.
+    tks = list(df_pos_changes.columns)
+    df_pos, _ = run_portfolio_sim(
+        traded_tickers=tks, df_prices=df_p[tks],
+        df_position_changes=df_pos_changes,
+        df_price_changes=df_pc, init_cash=init_cash,
+    )
+    return df_pos
+
+
+### SCREENING HELPERS
+
+def screen_backtest(signal_fn, series, params):
+    ser = series.dropna()
+    px  = ser.to_numpy(dtype=float)
+    dr  = np.concatenate(([0.], px[1:] / px[:-1] - 1))
+    sig = signal_fn(ser, **params)
+    arr = sig['signal'].to_numpy(dtype=float)
+    pos = np.concatenate(([0.], arr[:-1]))
+    dn  = pos * dr
+    return np.cumprod(1. + dn), dn
+
+
+def screen_optimise(signal_fn, series_is, grid):
+    best_s, best_p = -np.inf, None
+    for p in grid:
+        try:
+            _, dn = screen_backtest(signal_fn, series_is, p)
+            s = compute_sortino(dn[1:])
+            if s == s and s > best_s:
+                best_s, best_p = s, dict(p)
+        except Exception:
+            pass
+    return best_p, float(best_s) if best_s > -np.inf else float('nan')
+
+
+def screen_metrics(pv):
+    dr = np.concatenate(([0.], pv[1:] / pv[:-1] - 1))
+    return {
+        'Sortino': compute_sortino(dr[1:]),
+        'Sharpe':  compute_sharpe(dr[1:]),
+        'CAGR':    compute_cagr(pv),
+        'MaxDD':   compute_max_drawdown(pv),
+    }
+
+
+def screen_eval(df_period, sig_name, tk, screen_opt, signal_grids):
+    bp = screen_opt[sig_name][tk]['params']
+    if bp is None or tk not in df_period.columns:
+        return {k: float('nan') for k in ['Sortino', 'Sharpe', 'CAGR', 'MaxDD']}, None
+    ser = df_period[tk].dropna()
+    if len(ser) < 60:
+        return {k: float('nan') for k in ['Sortino', 'Sharpe', 'CAGR', 'MaxDD']}, None
+    try:
+        pv, _ = screen_backtest(signal_grids[sig_name][0], ser, bp)
+        return screen_metrics(pv), pv
+    except Exception:
+        return {k: float('nan') for k in ['Sortino', 'Sharpe', 'CAGR', 'MaxDD']}, None
