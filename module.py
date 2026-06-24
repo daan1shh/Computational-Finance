@@ -1,4 +1,4 @@
-### IMPORTS
+### Imports
 
 import numpy as np
 import pandas as pd
@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 from yahooquery import Ticker as yq_ticker
 
 
-### DOWNLOAD DATA
+### Download Data
 
 def download_stock_price_data(tickers, start_date, end_date):
     raw = yq_ticker(tickers).history(start=start_date, end=end_date)
@@ -34,7 +34,7 @@ def make_price_changes(df_prices):
     return pd.DataFrame(ratios, index=df_prices.index, columns=df_prices.columns)
 
 
-### SIGNALS — VECTORISED HELPERS
+### Singals: Vectorised Helpers
 
 def _vectorised_signal(entry_mask, exit_mask):
     # cumsum group-key trick: avoids a Python loop for stateful 0/1 signal.
@@ -51,7 +51,7 @@ def _vectorised_signal(entry_mask, exit_mask):
     )
 
 
-### HELPER FUNCTIONS
+### Helper Functions
 
 def moving_average(prices, window_length):
     # cumsum trick; NaN for the first (window_length-1) entries.
@@ -105,7 +105,7 @@ def compute_rsi(prices, period=14):
     return rsi
 
 
-### PERFORMANCE METRICS
+### Performance Metrics
 
 def compute_cagr(portfolio_values, trading_days_per_year=252):
     n_days = len(portfolio_values) - 1
@@ -135,7 +135,7 @@ def compute_drawdown_series(portfolio_values):
     return (portfolio_values - running_max) / running_max
 
 
-### SORTINO RATIO
+### Sortino Ratio
 
 def compute_sortino(daily_returns, target_return=0.0, trading_days_per_year=252, n_min=30):
     # annualised; NaN if fewer than n_min observations.
@@ -151,7 +151,7 @@ def compute_sortino(daily_returns, target_return=0.0, trading_days_per_year=252,
     return (np.sum(excess) / len(excess) / downside_dev) * np.sqrt(trading_days_per_year)
 
 
-### CALMAR RATIO
+### Calmar Ratio
 
 def compute_calmar(portfolio_values, trading_days_per_year=252):
     portfolio_values = np.asarray(portfolio_values, dtype=float)
@@ -162,7 +162,7 @@ def compute_calmar(portfolio_values, trading_days_per_year=252):
     return cagr / abs(max_dd)
 
 
-### ANNUAL VOLATILITY
+### Annual Volatility
 
 def compute_annual_volatility(daily_returns, trading_days_per_year=252):
     daily_returns = np.asarray(daily_returns, dtype=float)
@@ -172,14 +172,14 @@ def compute_annual_volatility(daily_returns, trading_days_per_year=252):
     return np.sqrt(variance) * np.sqrt(trading_days_per_year)
 
 
-### PORTFOLIO VALUE TO RETURNS
+### Portfolio Value to Returns
 
 def pv_to_returns(portfolio_values):
     portfolio_values = np.asarray(portfolio_values, dtype=float)
     return np.concatenate(([0.0], portfolio_values[1:] / portfolio_values[:-1] - 1))
 
 
-### TRADE EXPECTANCY
+### Trade Expectancy
 
 def _collect_trade_returns(position_changes_arr, price_returns_arr, trade_cost=0.001):
     # log-returns per completed round-trip; shared by expectancy and win-rate.
@@ -207,7 +207,7 @@ def _collect_trade_returns(position_changes_arr, price_returns_arr, trade_cost=0
     return trade_returns
 
 
-### MOMENT STATISTICS
+### Moment Statistics
 
 def numpy_moments(r):
     r = np.asarray(r, dtype=float)
@@ -222,7 +222,7 @@ def numpy_moments(r):
     return skew, kurt
 
 
-### DEFLATED SHARPE RATIO
+### Deflated Sharpe Ratio
 
 def compute_deflated_sharpe(sharpe, n_trials, n_observations, skewness=0.0, kurtosis=3.0):
     # rational-polynomial normal CDF approximation, no scipy.
@@ -264,7 +264,7 @@ def compute_deflated_sharpe(sharpe, n_trials, n_observations, skewness=0.0, kurt
     return dsr, sr_star
 
 
-### BASKET SORTINO
+### Basket Sortino
 
 def basket_sortino(signal_fn, df_basket, **params):
     # mean Sortino across basket ETFs with 1-day lag.
@@ -287,13 +287,13 @@ def basket_sortino(signal_fn, df_basket, **params):
     return float(np.mean(valid)) if valid else float('nan')
 
 
-### IS / OOS SPLIT
+### IS / OOS Split
 
 def slice_period(df, start, end):
     return df[(df.index >= start) & (df.index <= end)].copy()
 
 
-### SIGNAL 0 – MOVING AVERAGE CROSSOVER
+### Signal 0: Moving Average Crossover
 
 def ma_signal(series, short_window, long_window):
     # Golden Cross entry, death cross exit.
@@ -317,7 +317,7 @@ def ma_signal(series, short_window, long_window):
     return signals_df
 
 
-### SIGNAL 1 – RSI MEAN REVERSION
+### Signal 1: RSI 
 
 def rsi_signal(series, period=14, oversold=30, overbought=70):
     prices = np.asarray(series, dtype=float)
@@ -337,8 +337,40 @@ def rsi_signal(series, period=14, oversold=30, overbought=70):
     signals_df['position_change'] = pos_change
     return signals_df
 
+### Signal 2: Donchian
 
-### SIGNAL 2 – BOLLINGER BANDS MEAN REVERSION
+def donchian_signal(series, entry_window=55, exit_window=20):
+    prices = np.asarray(series, dtype=float)
+    n      = len(prices)
+
+    from numpy.lib.stride_tricks import sliding_window_view
+
+    entry_high = np.full(n, np.nan)
+    if n > entry_window:
+        wins = sliding_window_view(prices[:-1], entry_window)
+        entry_high[entry_window:] = np.max(wins, axis=1)
+
+    exit_low = np.full(n, np.nan)
+    if n > exit_window:
+        wins = sliding_window_view(prices[:-1], exit_window)
+        exit_low[exit_window:] = np.min(wins, axis=1)
+
+    valid      = ~np.isnan(entry_high) & ~np.isnan(exit_low)
+    entry_mask = valid & (prices > entry_high)
+    exit_mask  = valid & (prices < exit_low)
+
+    signal     = _vectorised_signal(entry_mask, exit_mask)
+    pos_change = np.concatenate(([0.0], signal[1:] - signal[:-1]))
+
+    signals_df = pd.DataFrame(index=series.index)
+    signals_df['signal']          = signal
+    signals_df['entry_high']      = entry_high
+    signals_df['exit_low']        = exit_low
+    signals_df['position_change'] = pos_change
+    return signals_df
+
+
+### Signal 3: Bollinger Bands
 
 def bollinger_signal(series, window=20, num_std=2):
     # Entry below lower band; exit above middle band.
@@ -379,6 +411,8 @@ def exponential_moving_average(prices, span):
     return ema
 
 
+### Signal 4: MACD 
+
 def macd_signal(series, fast_span=12, slow_span=26, signal_span=9):
     # Buy on MACD line crossing above signal line, sell on the reverse.
     prices = np.asarray(series, dtype=float)
@@ -412,6 +446,8 @@ def macd_signal(series, fast_span=12, slow_span=26, signal_span=9):
     return signals_df
 
 
+### Signal 5: Z-Score
+
 def zscore_signal(series, window=20, entry_threshold=2.0, exit_threshold=0.0):
     prices = np.asarray(series, dtype=float)
 
@@ -435,37 +471,6 @@ def zscore_signal(series, window=20, entry_threshold=2.0, exit_threshold=0.0):
     return signals_df
 
 
-### SIGNAL 3 – DONCHIAN CHANNEL BREAKOUT
-
-def donchian_signal(series, entry_window=55, exit_window=20):
-    prices = np.asarray(series, dtype=float)
-    n      = len(prices)
-
-    from numpy.lib.stride_tricks import sliding_window_view
-
-    entry_high = np.full(n, np.nan)
-    if n > entry_window:
-        wins = sliding_window_view(prices[:-1], entry_window)
-        entry_high[entry_window:] = np.max(wins, axis=1)
-
-    exit_low = np.full(n, np.nan)
-    if n > exit_window:
-        wins = sliding_window_view(prices[:-1], exit_window)
-        exit_low[exit_window:] = np.min(wins, axis=1)
-
-    valid      = ~np.isnan(entry_high) & ~np.isnan(exit_low)
-    entry_mask = valid & (prices > entry_high)
-    exit_mask  = valid & (prices < exit_low)
-
-    signal     = _vectorised_signal(entry_mask, exit_mask)
-    pos_change = np.concatenate(([0.0], signal[1:] - signal[:-1]))
-
-    signals_df = pd.DataFrame(index=series.index)
-    signals_df['signal']          = signal
-    signals_df['entry_high']      = entry_high
-    signals_df['exit_low']        = exit_low
-    signals_df['position_change'] = pos_change
-    return signals_df
 
 
 def stochastic_signal(series, k_window=14, d_window=3, oversold=20, overbought=80):
@@ -501,7 +506,7 @@ def stochastic_signal(series, k_window=14, d_window=3, oversold=20, overbought=8
     return signals_df
 
 
-### BUILD HEATMAP MATRIX
+### Build Heatmap Matrix
 
 def build_matrix(grid_results, row_vals, col_vals, row_key, col_key):
     mat = np.full((len(row_vals), len(col_vals)), np.nan)
@@ -513,7 +518,7 @@ def build_matrix(grid_results, row_vals, col_vals, row_key, col_key):
     return mat
 
 
-### VISUALISATION
+### Visualisation
 
 def draw_heatmap(ax, data, row_labels, col_labels, row_title, col_title,
                  title, star_row, star_col, colorbar_label='Sortino'):
@@ -538,7 +543,7 @@ def draw_heatmap(ax, data, row_labels, col_labels, row_title, col_title,
     plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label=colorbar_label)
 
 
-### PORTFOLIO SIMULATION
+### Portfolio Simulation
 
 def run_portfolio_sim(traded_tickers, df_prices, df_position_changes,
                       df_price_changes, init_cash=1.0):
@@ -603,7 +608,7 @@ def compute_win_rate(position_changes_arr, price_returns_arr):
     return wins / len(trade_returns)
 
 
-### DATA LOADING
+### Data Loading
 
 def load_etf(tickers_list, csv_name, start, end, data_dir):
     # Load ETF prices from a local CSV cache; downloads via yahooquery if the file is absent.
@@ -626,7 +631,7 @@ def load_etf(tickers_list, csv_name, start, end, data_dir):
     return df
 
 
-### PORTFOLIO HELPERS
+### Portfolio Helpers
 
 def basket_portfolio_value(signal_fn, df_basket, params):
     # Equal-weight basket backtest with a 1-day execution lag (signal at t-1 earns return at t).
@@ -682,7 +687,7 @@ def run_portfolio(df_p, df_pc, df_pos_changes, init_cash=1.0):
     return df_pos
 
 
-### SCREENING HELPERS
+### Screening Helpers
 
 def screen_backtest(signal_fn, series, params):
     ser = series.dropna()
