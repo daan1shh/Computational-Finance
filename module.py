@@ -179,6 +179,16 @@ def pv_to_returns(portfolio_values):
     return np.concatenate(([0.0], portfolio_values[1:] / portfolio_values[:-1] - 1))
 
 
+### Signal Returns
+
+def signal_returns(price_series, signal_series):
+    # Lagged strategy returns: signal[t-1] * price_return[t].
+    px  = np.asarray(price_series, dtype=float)
+    sig = np.asarray(signal_series, dtype=float)
+    pr  = np.concatenate(([0.0], px[1:] / px[:-1] - 1))
+    return pr[1:] * sig[:-1]
+
+
 ### Trade Expectancy
 
 def _collect_trade_returns(position_changes_arr, price_returns_arr, trade_cost=0.001):
