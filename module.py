@@ -7,18 +7,38 @@
 
 ### Imports
 
+import importlib.util, subprocess, sys
+
+for _pkg in ['numpy', 'pandas', 'matplotlib', 'yahooquery']:
+    if importlib.util.find_spec(_pkg) is None:
+        for _flags in ([], ['--user'], ['--break-system-packages']):
+            try:
+                subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--quiet', _pkg] + _flags)
+                break
+            except subprocess.CalledProcessError:
+                if _flags == ['--break-system-packages']:
+                    raise
+
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from yahooquery import Ticker as yq_ticker
+from numpy.lib.stride_tricks import sliding_window_view
 
 
 ### Download Data
 
 def download_stock_price_data(tickers, start_date, end_date):
+    from yahooquery import Ticker as yq_ticker
     raw = yq_ticker(tickers).history(start=start_date, end=end_date)
-    df_prices = raw['adjclose'].unstack(level=0)
+    adj = raw['adjclose']
+    if isinstance(adj.index, pd.MultiIndex):
+        df_prices = adj.unstack(level=0)
+    else:
+        df_prices = adj.to_frame() if isinstance(adj, pd.Series) else adj
     df_prices = df_prices.dropna()
+    df_prices.index = pd.to_datetime(df_prices.index)
+    if getattr(df_prices.index, 'tz', None) is not None:
+        df_prices.index = df_prices.index.tz_localize(None)
 
     df_price_changes = df_prices.copy(deep=True)
     df_price_changes[:] = _compute_price_ratios(df_prices.to_numpy())
@@ -360,8 +380,6 @@ def donchian_signal(series, entry_window=55, exit_window=20):
     prices = np.asarray(series, dtype=float)
     n      = len(prices)
 
-    from numpy.lib.stride_tricks import sliding_window_view
-
     entry_high = np.full(n, np.nan)
     if n > entry_window:
         wins = sliding_window_view(prices[:-1], entry_window)
@@ -494,7 +512,6 @@ def stochastic_signal(series, k_window=14, d_window=3, oversold=20, overbought=8
     prices = np.asarray(series, dtype=float)
     n      = len(prices)
 
-    from numpy.lib.stride_tricks import sliding_window_view
     windows      = sliding_window_view(prices, k_window)
     highest_high = np.full(n, np.nan)
     lowest_low   = np.full(n, np.nan)
@@ -628,18 +645,23 @@ def compute_win_rate(position_changes_arr, price_returns_arr):
 ### Data Loading
 
 def load_etf(tickers_list, csv_name, start, end, data_dir):
-    # Load ETF prices from a local CSV cache; downloads via yahooquery if the file is absent.
-    # Called by research_notebook to source sector ETF and benchmark price histories.
     import pathlib as _pl
     csv_path = _pl.Path(data_dir) / csv_name
     if csv_path.exists():
         df = pd.read_csv(csv_path, index_col=0, parse_dates=True)
-        df = df[[t for t in tickers_list if t in df.columns]]
+        missing = [t for t in tickers_list if t not in df.columns]
+        if missing:
+            df_new, _ = download_stock_price_data(missing, start, end)
+            df = df.join(df_new, how='outer')
+            df.to_csv(csv_path)
     else:
         df, _ = download_stock_price_data(tickers_list, start, end)
         df.to_csv(csv_path)
         print(f'Downloaded and cached -> {csv_name}.')
     df.index = pd.to_datetime(df.index)
+    if getattr(df.index, 'tz', None) is not None:
+        df.index = df.index.tz_localize(None)
+    df = df[[t for t in tickers_list if t in df.columns]]
     if df.empty or len(df.columns) == 0:
         raise ValueError(
             f'load_etf: no columns for {tickers_list} in {csv_name}. '
