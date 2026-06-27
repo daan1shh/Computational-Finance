@@ -1,3 +1,10 @@
+### Group 7 Members
+#Daanish Muzaffar (7259472)  
+#Florian Niklas Hintz (7299289)  
+#Philip Boehnke (7383580)  
+#Walid Al-Nimah (6075417)
+
+
 ### Imports
 
 import numpy as np
