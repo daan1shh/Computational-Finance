@@ -647,25 +647,15 @@ def compute_win_rate(position_changes_arr, price_returns_arr):
 def load_etf(tickers_list, csv_name, start, end, data_dir):
     import pathlib as _pl
     csv_path = _pl.Path(data_dir) / csv_name
-    if csv_path.exists():
-        df = pd.read_csv(csv_path, index_col=0, parse_dates=True)
-        missing = [t for t in tickers_list if t not in df.columns]
-        if missing:
-            df_new, _ = download_stock_price_data(missing, start, end)
-            df = df.join(df_new, how='outer')
-            df.to_csv(csv_path)
-    else:
-        df, _ = download_stock_price_data(tickers_list, start, end)
-        df.to_csv(csv_path)
-        print(f'Downloaded and cached -> {csv_name}.')
+    df, _ = download_stock_price_data(tickers_list, start, end)
+    df.to_csv(csv_path)
     df.index = pd.to_datetime(df.index)
     if getattr(df.index, 'tz', None) is not None:
         df.index = df.index.tz_localize(None)
     df = df[[t for t in tickers_list if t in df.columns]]
     if df.empty or len(df.columns) == 0:
         raise ValueError(
-            f'load_etf: no columns for {tickers_list} in {csv_name}. '
-            f'File cols: {list(pd.read_csv(_pl.Path(data_dir) / csv_name, index_col=0, nrows=0).columns)}'
+            f'load_etf: no columns for {tickers_list}.'
         )
     return df
 
